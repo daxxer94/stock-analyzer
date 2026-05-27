@@ -36,15 +36,38 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# ─── iPhone home screen icon + PWA meta tags ────────────────────────────────
-st.markdown("""
-<link rel="apple-touch-icon" sizes="180x180" href="/app/static/apple-touch-icon.png">
-<link rel="shortcut icon" type="image/png" href="/app/static/apple-touch-icon.png">
-<meta name="mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="apple-mobile-web-app-title" content="Stock Analyzer">
-""", unsafe_allow_html=True)
+# ─── iPhone home screen icon injected into <head> via JS ────────────────────
+import streamlit.components.v1 as _components
+_components.html("""
+<script>
+(function() {
+  var head = window.parent.document.head;
+
+  function addLink(rel, sizes, href) {
+    var el = window.parent.document.createElement('link');
+    el.rel  = rel;
+    if (sizes) el.sizes = sizes;
+    el.href = href;
+    head.appendChild(el);
+  }
+  function addMeta(name, content) {
+    var el = window.parent.document.createElement('meta');
+    el.name    = name;
+    el.content = content;
+    head.appendChild(el);
+  }
+
+  addLink('apple-touch-icon',       '180x180', '/app/static/apple-touch-icon.png');
+  addLink('apple-touch-icon-precomposed', '180x180', '/app/static/apple-touch-icon.png');
+  addLink('shortcut icon',          '',        '/app/static/apple-touch-icon.png');
+  addMeta('apple-mobile-web-app-capable',          'yes');
+  addMeta('apple-mobile-web-app-status-bar-style', 'black-translucent');
+  addMeta('apple-mobile-web-app-title',            'Stock Analyzer');
+  addMeta('mobile-web-app-capable',                'yes');
+  addMeta('theme-color',                           '#0e1117');
+})();
+</script>
+""", height=0, scrolling=False)
 
 # ─── Inject CSS ──────────────────────────────────────────────────────────────
 st.markdown(TOOLTIP_CSS + """
