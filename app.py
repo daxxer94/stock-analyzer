@@ -36,6 +36,16 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+# ─── iPhone home screen icon + PWA meta tags ────────────────────────────────
+st.markdown("""
+<link rel="apple-touch-icon" sizes="180x180" href="/app/static/apple-touch-icon.png">
+<link rel="shortcut icon" type="image/png" href="/app/static/apple-touch-icon.png">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Stock Analyzer">
+""", unsafe_allow_html=True)
+
 # ─── Inject CSS ──────────────────────────────────────────────────────────────
 st.markdown(TOOLTIP_CSS + """
 <style>
