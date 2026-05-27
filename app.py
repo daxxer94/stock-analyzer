@@ -23,9 +23,10 @@ from scoring             import score_fundamental, score_valuation, score_sentim
 from tooltips            import TOOLTIP_CSS, tooltip_html, section_header, METRICS
 
 # ─── Page config ─────────────────────────────────────────────────────────────
+favicon = Image.open("favicon.png")
 st.set_page_config(
     page_title="Stock Analyzer",
-    page_icon="📈",
+    page_icon=favicon,
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -792,6 +793,7 @@ def render_deploy_guide():
 
 def main():
     with st.sidebar:
+        st.image("logo.png", width=180)
         st.markdown("# 📈 Stock Analyzer")
         st.markdown("---")
         st.markdown("**Enter up to 5 tickers**")
