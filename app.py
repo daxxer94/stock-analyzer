@@ -710,14 +710,21 @@ def render_summary(results, rfr):
         ("Gross Margin",    lambda i: i.get("grossMargins"),                        True),
         ("Debt/Equity",     lambda i: (i.get("debtToEquity") or 0) / 100,          False),
         ("Beta",            lambda i: i.get("beta"),                                False),
-        ("Market Cap",      lambda i: i.get("marketCap"),                           True),
+        ("Market Cap",      lambda i: i.get("marketCap"),                           "usd"),
     ]
     rows = []
-    for label, fn, is_pct in metrics:
+    for label, fn, fmt_type in metrics:
         row = {"Metric": label}
         for t, r in valid:
             v = fn(r["data"]["info"])
-            row[t] = f"{v*100:.1f}%" if is_pct and v is not None else fmt(v, dec=1)
+            if v is None:
+                row[t] = "—"
+            elif fmt_type is True:
+                row[t] = f"{v*100:.1f}%"
+            elif fmt_type == "usd":
+                row[t] = fmt(v, prefix="$")
+            else:
+                row[t] = fmt(v, dec=1)
         rows.append(row)
     st.dataframe(pd.DataFrame(rows).set_index("Metric"), use_container_width=True)
 
@@ -868,7 +875,9 @@ def main():
         st.markdown("---")
         st.caption("Data: Yahoo Finance · Cache: 1h\n"
                    "Peers: 60+ industries · 30+ exchanges\n"
-                   "Scores: F=40% V=25% T=20% S=15%")
+                   "Scores: F=40% V=25% T=20% S=15%\n"
+                   "⚠️ Rate limits: analyse 1–2 tickers\n"
+                   "at a time for best results.")
 
     if deploy_btn:
         st.session_state["show_deploy"] = True
