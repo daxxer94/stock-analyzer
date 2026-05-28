@@ -619,17 +619,19 @@ def validate_peers(tickers_tuple: tuple, target_mktcap: float) -> List[str]:
     Filter a candidate list: must have valid price.
     Sort by market-cap proximity to target.
     Return up to 10.
+    Staggered requests to avoid rate limiting.
     """
     valid = []
-    for t in tickers_tuple:
+    for i, t in enumerate(tickers_tuple):
+        # Stagger: 0.5s between each, longer pause every 5
+        time.sleep(1.0 if (i > 0 and i % 5 == 0) else 0.5)
         try:
-            info = yf.Ticker(t).info
+            info  = yf.Ticker(t).info
             price = info.get("currentPrice") or info.get("regularMarketPrice") or info.get("previousClose")
             if not price or float(price) == 0:
                 continue
             mktcap = info.get("marketCap") or 0
             valid.append((t, mktcap))
-            time.sleep(0.05)
         except Exception:
             pass
 

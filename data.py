@@ -1,5 +1,6 @@
 """
 data.py - Data fetching from Yahoo Finance via yfinance.
+Includes retry logic with exponential backoff to handle rate limiting.
 All functions are cached with st.cache_data to avoid redundant API calls.
 """
 import yfinance as yf
@@ -7,108 +8,173 @@ import pandas as pd
 import numpy as np
 import streamlit as st
 import time
+import random
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
-def fetch_ticker_data(ticker: str) -> dict:
-    """Fetch all relevant data for a single ticker."""
-    ticker = ticker.upper().strip()
-    try:
-        stock = yf.Ticker(ticker)
-        info  = stock.info
+# ─── Retry helper ─────────────────────────────────────────────────────────────
 
-        price = info.get("currentPrice") or info.get("regularMarketPrice") or info.get("previousClose")
-        if not price or float(price) == 0:
-            return {"ticker": ticker, "error": f"Could not find price data for '{ticker}'. "
-                    "Check the symbol — EU examples: ASML.AS, SHEL.L, SAP.DE, TTE.PA"}
-
-        hist_2y = stock.history(period="2y")
-        hist_5y = stock.history(period="5y")
-
-        income_stmt   = _safe_fetch(stock, "income_stmt")
-        balance_sheet = _safe_fetch(stock, "balance_sheet")
-        cash_flow     = _safe_fetch(stock, "cashflow")
-        q_income      = _safe_fetch(stock, "quarterly_income_stmt")
-        q_balance     = _safe_fetch(stock, "quarterly_balance_sheet")
-        q_cashflow    = _safe_fetch(stock, "quarterly_cashflow")
-
-        recommendations  = _safe_fetch(stock, "recommendations")
-        analyst_targets  = _safe_fetch(stock, "analyst_price_targets")
-        earnings_history = _safe_fetch(stock, "earnings_history")
-        institutional    = _safe_fetch(stock, "institutional_holders")
-
-        # ── Earnings dates (EPS estimate vs actual) ───────────────────────────
-        earnings_dates = pd.DataFrame()
+def _retry(fn, retries=4, base_delay=2.0, label=""):
+    """
+    Call fn() with exponential backoff on rate-limit / server errors.
+    Delays: 2s, 4s, 8s, 16s + random jitter.
+    """
+    last_err = None
+    for attempt in range(retries):
         try:
-            earnings_dates = stock.get_earnings_dates(limit=12)
-        except Exception:
-            try:
-                earnings_dates = stock.earnings_dates
-            except Exception:
-                pass
-
-        # ── Upcoming earnings calendar ────────────────────────────────────────
-        calendar = {}
-        try:
-            calendar = stock.get_calendar() or {}
-        except Exception:
-            pass
-
-        # ── Analyst estimates ─────────────────────────────────────────────────
-        earnings_estimate = pd.DataFrame()
-        revenue_estimate  = pd.DataFrame()
-        eps_trend         = pd.DataFrame()
-        growth_estimates  = pd.DataFrame()
-        try:
-            earnings_estimate = stock.get_earnings_estimate() or pd.DataFrame()
-            revenue_estimate  = stock.get_revenue_estimate()  or pd.DataFrame()
-            eps_trend         = stock.get_eps_trend()          or pd.DataFrame()
-            growth_estimates  = stock.get_growth_estimates()   or pd.DataFrame()
-        except Exception:
-            pass
-
-        return {
-            "ticker": ticker,
-            "info":   info,
-            "hist_2y":  hist_2y,
-            "hist_5y":  hist_5y,
-            "income_stmt":   income_stmt,
-            "balance_sheet": balance_sheet,
-            "cash_flow":     cash_flow,
-            "q_income":   q_income,
-            "q_balance":  q_balance,
-            "q_cashflow": q_cashflow,
-            "recommendations":   recommendations,
-            "analyst_targets":   analyst_targets,
-            "earnings_history":  earnings_history,
-            "institutional":     institutional,
-            "earnings_dates":    earnings_dates,
-            "calendar":          calendar,
-            "earnings_estimate": earnings_estimate,
-            "revenue_estimate":  revenue_estimate,
-            "eps_trend":         eps_trend,
-            "growth_estimates":  growth_estimates,
-            "error": None,
-        }
-    except Exception as e:
-        return {"ticker": ticker, "error": str(e)}
+            return fn()
+        except Exception as e:
+            last_err = e
+            msg = str(e).lower()
+            # Only retry on rate-limit or server errors
+            if any(x in msg for x in ["429", "too many", "rate", "502", "503", "504", "timeout"]):
+                wait = base_delay * (2 ** attempt) + random.uniform(0.5, 1.5)
+                if label:
+                    st.toast(f"⏳ Rate limited on {label} — waiting {wait:.0f}s…", icon="⏳")
+                time.sleep(wait)
+            else:
+                raise  # non-rate-limit error — don't retry
+    raise last_err
 
 
-def _safe_fetch(stock, attr: str):
+def _safe_get(stock, attr):
+    """Fetch a yfinance attribute, returning empty DataFrame on any error."""
     try:
         val = getattr(stock, attr)
-        if val is None:
-            return pd.DataFrame()
-        return val if isinstance(val, pd.DataFrame) else val
+        return val if val is not None else pd.DataFrame()
     except Exception:
         return pd.DataFrame()
 
 
+def _safe_get_retry(stock, attr, ticker=""):
+    """Fetch a yfinance attribute with retry on rate limiting."""
+    try:
+        return _retry(lambda: _safe_get(stock, attr), label=f"{ticker}/{attr}")
+    except Exception:
+        return pd.DataFrame()
+
+
+# ─── Main ticker fetch ────────────────────────────────────────────────────────
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_ticker_data(ticker: str) -> dict:
+    """Fetch all relevant data for a single ticker, with rate-limit retries."""
+    ticker = ticker.upper().strip()
+    try:
+        stock = yf.Ticker(ticker)
+
+        # info is the most likely to be rate-limited
+        info = _retry(lambda: stock.info, label=ticker)
+
+        price = info.get("currentPrice") or info.get("regularMarketPrice") or info.get("previousClose")
+        if not price or float(price) == 0:
+            return {"ticker": ticker, "error":
+                    f"Could not find price data for '{ticker}'. "
+                    "Check the symbol — EU examples: ASML.AS, SHEL.L, SAP.DE, TTE.PA"}
+
+        # Stagger requests to avoid hammering Yahoo Finance
+        hist_2y = _retry(lambda: stock.history(period="2y"), label=f"{ticker}/hist_2y")
+        time.sleep(0.3)
+        hist_5y = _retry(lambda: stock.history(period="5y"), label=f"{ticker}/hist_5y")
+        time.sleep(0.3)
+
+        income_stmt   = _safe_get_retry(stock, "income_stmt",   ticker)
+        time.sleep(0.2)
+        balance_sheet = _safe_get_retry(stock, "balance_sheet", ticker)
+        time.sleep(0.2)
+        cash_flow     = _safe_get_retry(stock, "cashflow",      ticker)
+        time.sleep(0.2)
+        q_income      = _safe_get_retry(stock, "quarterly_income_stmt",   ticker)
+        time.sleep(0.2)
+        q_balance     = _safe_get_retry(stock, "quarterly_balance_sheet", ticker)
+        time.sleep(0.2)
+        q_cashflow    = _safe_get_retry(stock, "quarterly_cashflow",      ticker)
+        time.sleep(0.2)
+
+        recommendations  = _safe_get_retry(stock, "recommendations",   ticker)
+        time.sleep(0.2)
+        analyst_targets  = _safe_get_retry(stock, "analyst_price_targets", ticker)
+        time.sleep(0.2)
+        earnings_history = _safe_get_retry(stock, "earnings_history",  ticker)
+        time.sleep(0.2)
+        institutional    = _safe_get_retry(stock, "institutional_holders", ticker)
+        time.sleep(0.2)
+
+        # Earnings dates
+        earnings_dates = pd.DataFrame()
+        try:
+            earnings_dates = _retry(lambda: stock.get_earnings_dates(limit=12), label=f"{ticker}/earn_dates")
+        except Exception:
+            try:
+                earnings_dates = stock.earnings_dates or pd.DataFrame()
+            except Exception:
+                pass
+        time.sleep(0.2)
+
+        # Calendar
+        calendar = {}
+        try:
+            calendar = _retry(lambda: stock.get_calendar() or {}, label=f"{ticker}/calendar")
+        except Exception:
+            pass
+        time.sleep(0.2)
+
+        # Analyst estimates
+        earnings_estimate = pd.DataFrame()
+        revenue_estimate  = pd.DataFrame()
+        eps_trend         = pd.DataFrame()
+        growth_estimates  = pd.DataFrame()
+        for attr, var_name in [("get_earnings_estimate", "earnings_estimate"),
+                                ("get_revenue_estimate",  "revenue_estimate"),
+                                ("get_eps_trend",         "eps_trend"),
+                                ("get_growth_estimates",  "growth_estimates")]:
+            try:
+                val = _retry(lambda a=attr: getattr(stock, a)() or pd.DataFrame(), label=f"{ticker}/{attr}")
+                if attr == "get_earnings_estimate": earnings_estimate = val
+                elif attr == "get_revenue_estimate":  revenue_estimate  = val
+                elif attr == "get_eps_trend":         eps_trend         = val
+                elif attr == "get_growth_estimates":  growth_estimates  = val
+            except Exception:
+                pass
+            time.sleep(0.15)
+
+        # News
+        news_items = []
+        try:
+            news_items = _retry(lambda: yf.Ticker(ticker).get_news(count=15) or [], label=f"{ticker}/news")
+        except Exception:
+            pass
+
+        return {
+            "ticker": ticker, "info": info,
+            "hist_2y": hist_2y, "hist_5y": hist_5y,
+            "news": news_items,
+            "income_stmt": income_stmt, "balance_sheet": balance_sheet, "cash_flow": cash_flow,
+            "q_income": q_income, "q_balance": q_balance, "q_cashflow": q_cashflow,
+            "recommendations": recommendations, "analyst_targets": analyst_targets,
+            "earnings_history": earnings_history, "institutional": institutional,
+            "earnings_dates": earnings_dates, "calendar": calendar,
+            "earnings_estimate": earnings_estimate, "revenue_estimate": revenue_estimate,
+            "eps_trend": eps_trend, "growth_estimates": growth_estimates,
+            "error": None,
+        }
+
+    except Exception as e:
+        msg = str(e).lower()
+        if any(x in msg for x in ["429", "too many", "rate"]):
+            return {"ticker": ticker, "error":
+                    f"Yahoo Finance rate limit hit for '{ticker}'. "
+                    "Please wait 30–60 seconds and try again. "
+                    "Tip: analyse 1–2 tickers at a time to avoid this."}
+        return {"ticker": ticker, "error": str(e)}
+
+
+# ─── Risk-free rate ───────────────────────────────────────────────────────────
+
 @st.cache_data(ttl=86400, show_spinner=False)
 def fetch_risk_free_rate() -> float:
-    """Fetch current 10-year US Treasury yield (^TNX). Falls back to 4.5%."""
+    """Fetch 10-year US Treasury yield. Falls back to 4.5%."""
     try:
-        hist = yf.Ticker("^TNX").history(period="5d")
+        hist = _retry(lambda: yf.Ticker("^TNX").history(period="5d"), label="^TNX")
         if not hist.empty:
             return float(hist["Close"].iloc[-1]) / 100.0
     except Exception:
@@ -119,18 +185,28 @@ def fetch_risk_free_rate() -> float:
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_sp500() -> pd.DataFrame:
     try:
-        return yf.Ticker("^GSPC").history(period="2y")
+        return _retry(lambda: yf.Ticker("^GSPC").history(period="2y"), label="^GSPC")
     except Exception:
         return pd.DataFrame()
 
 
+# ─── Peer metrics ─────────────────────────────────────────────────────────────
+
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_peer_metrics(tickers_tuple: tuple) -> dict:
-    """Fetch key valuation & profitability metrics for peer list."""
+    """
+    Fetch valuation metrics for peer list.
+    Staggered with delays + retry to avoid rate limiting.
+    """
     result = {}
-    for t in tickers_tuple:
+    for i, t in enumerate(tickers_tuple):
+        # Progressive delay: every 3 tickers, pause a bit longer
+        if i > 0 and i % 3 == 0:
+            time.sleep(1.0)
+        else:
+            time.sleep(0.4)
         try:
-            info  = yf.Ticker(t).info
+            info = _retry(lambda ticker=t: yf.Ticker(ticker).info, label=t)
             price = info.get("currentPrice") or info.get("regularMarketPrice") or 0
             if not price:
                 continue
@@ -161,73 +237,55 @@ def fetch_peer_metrics(tickers_tuple: tuple) -> dict:
                 "dividend_yield":   info.get("dividendYield"),
                 "current_price":    float(price),
             }
-            time.sleep(0.05)
         except Exception:
-            pass
+            pass  # Skip peers that fail — don't let one bad ticker kill the rest
     return result
 
 
 # ─── Earnings / Forecast Helpers ─────────────────────────────────────────────
 
 def parse_earnings_dates(df: pd.DataFrame) -> list:
-    """
-    Parse earnings_dates DataFrame into a list of dicts.
-    Returns: [{date, eps_estimate, eps_actual, surprise_pct, is_future}, ...]
-    Sorted newest first.
-    """
     if df is None or (hasattr(df, "empty") and df.empty):
         return []
     rows = []
     try:
-        # Column names vary across yfinance versions
         col_est = next((c for c in df.columns if "estimate" in c.lower()), None)
-        col_act = next((c for c in df.columns if "reported" in c.lower() or "actual" in c.lower() or "eps" in c.lower() and "estimate" not in c.lower()), None)
+        col_act = next((c for c in df.columns
+                        if ("reported" in c.lower() or "actual" in c.lower()
+                            or ("eps" in c.lower() and "estimate" not in c.lower()))), None)
         col_sur = next((c for c in df.columns if "surprise" in c.lower() and "%" in c.lower()), None)
 
-        import datetime
         today = pd.Timestamp.now(tz="UTC")
-
         for idx, row in df.iterrows():
             ts = idx if isinstance(idx, pd.Timestamp) else pd.to_datetime(idx, errors="coerce")
             if pd.isna(ts):
                 continue
-            # Ensure timezone-aware comparison
-            ts_aware = ts.tz_localize("UTC") if ts.tzinfo is None else ts
+            ts_aware  = ts.tz_localize("UTC") if ts.tzinfo is None else ts
             is_future = ts_aware > today
-
-            eps_est  = _safe_float(row[col_est] if col_est else None)
-            eps_act  = _safe_float(row[col_act] if col_act else None)
-            surp     = _safe_float(row[col_sur] if col_sur else None)
-
-            if surp is None and eps_est is not None and eps_act is not None and eps_est != 0:
+            eps_est   = _safe_float(row[col_est] if col_est else None)
+            eps_act   = _safe_float(row[col_act] if col_act else None)
+            surp      = _safe_float(row[col_sur] if col_sur else None)
+            if surp is None and eps_est and eps_act and eps_est != 0:
                 surp = (eps_act - eps_est) / abs(eps_est) * 100
-
-            rows.append({
-                "date":        ts.strftime("%Y-%m-%d"),
-                "eps_estimate": eps_est,
-                "eps_actual":   eps_act,
-                "surprise_pct": surp,
-                "is_future":    is_future,
-            })
+            rows.append({"date": ts.strftime("%Y-%m-%d"), "eps_estimate": eps_est,
+                         "eps_actual": eps_act, "surprise_pct": surp, "is_future": is_future})
     except Exception:
         pass
     return sorted(rows, key=lambda x: x["date"], reverse=True)
 
 
 def parse_calendar(cal: dict) -> dict:
-    """Extract next earnings date and estimated EPS range from calendar dict."""
     if not cal:
         return {}
     result = {}
     try:
-        # Yahoo Finance calendar format varies
         if "Earnings Date" in cal:
             ed = cal["Earnings Date"]
             if isinstance(ed, (list, tuple)):
                 result["next_earnings_date"] = ed[0].strftime("%Y-%m-%d") if hasattr(ed[0], "strftime") else str(ed[0])
             else:
                 result["next_earnings_date"] = str(ed)
-        for k in ["Earnings High", "Earnings Low", "Earnings Average", "Revenue High", "Revenue Low", "Revenue Average"]:
+        for k in ["Earnings High","Earnings Low","Earnings Average","Revenue High","Revenue Low","Revenue Average"]:
             if k in cal:
                 result[k.lower().replace(" ", "_")] = _safe_float(cal[k])
     except Exception:
@@ -236,18 +294,14 @@ def parse_calendar(cal: dict) -> dict:
 
 
 def parse_estimates(earnings_est: pd.DataFrame, revenue_est: pd.DataFrame) -> dict:
-    """Parse analyst estimate tables into a structured dict."""
     result = {}
     try:
         if earnings_est is not None and not earnings_est.empty:
-            # Rows = periods (0q=current quarter, 1q=next quarter, 0y, 1y)
             for period in earnings_est.index[:4]:
                 row = earnings_est.loc[period]
                 result[f"eps_est_{period}"] = {
-                    "avg":   _safe_float(row.get("avg")),
-                    "low":   _safe_float(row.get("low")),
-                    "high":  _safe_float(row.get("high")),
-                    "count": _safe_float(row.get("numberOfAnalysts")),
+                    "avg": _safe_float(row.get("avg")), "low": _safe_float(row.get("low")),
+                    "high": _safe_float(row.get("high")), "count": _safe_float(row.get("numberOfAnalysts")),
                     "growth": _safe_float(row.get("growth")),
                 }
     except Exception:
@@ -257,10 +311,8 @@ def parse_estimates(earnings_est: pd.DataFrame, revenue_est: pd.DataFrame) -> di
             for period in revenue_est.index[:4]:
                 row = revenue_est.loc[period]
                 result[f"rev_est_{period}"] = {
-                    "avg":  _safe_float(row.get("avg")),
-                    "low":  _safe_float(row.get("low")),
-                    "high": _safe_float(row.get("high")),
-                    "growth": _safe_float(row.get("growth")),
+                    "avg": _safe_float(row.get("avg")), "low": _safe_float(row.get("low")),
+                    "high": _safe_float(row.get("high")), "growth": _safe_float(row.get("growth")),
                 }
     except Exception:
         pass
@@ -268,18 +320,17 @@ def parse_estimates(earnings_est: pd.DataFrame, revenue_est: pd.DataFrame) -> di
 
 
 def parse_eps_trend(eps_trend: pd.DataFrame) -> dict:
-    """Parse EPS revision trend — how estimates have changed over time."""
     result = {}
     try:
         if eps_trend is not None and not eps_trend.empty:
-            for period in eps_trend.index[:2]:  # current & next quarter
+            for period in eps_trend.index[:2]:
                 row = eps_trend.loc[period]
                 result[f"eps_trend_{period}"] = {
-                    "current":    _safe_float(row.get("current")),
-                    "7daysAgo":   _safe_float(row.get("7daysAgo")),
-                    "30daysAgo":  _safe_float(row.get("30daysAgo")),
-                    "60daysAgo":  _safe_float(row.get("60daysAgo")),
-                    "90daysAgo":  _safe_float(row.get("90daysAgo")),
+                    "current":   _safe_float(row.get("current")),
+                    "7daysAgo":  _safe_float(row.get("7daysAgo")),
+                    "30daysAgo": _safe_float(row.get("30daysAgo")),
+                    "60daysAgo": _safe_float(row.get("60daysAgo")),
+                    "90daysAgo": _safe_float(row.get("90daysAgo")),
                 }
     except Exception:
         pass

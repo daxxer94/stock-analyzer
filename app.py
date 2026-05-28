@@ -22,6 +22,12 @@ from technical           import calculate_indicators, generate_signals
 from valuation_sentiment import get_valuation_ratios, compare_with_peers, analyze_sentiment
 from scoring             import score_fundamental, score_valuation, score_sentiment, calculate_composite
 from tooltips            import TOOLTIP_CSS, tooltip_html, section_header, METRICS
+from currency            import (fetch_fx_rates, fmt_currency, get_ticker_currency,
+                                  apply_currency_to_info, sidebar_currency_selector,
+                                  CURRENCY_SYMBOLS)
+from sec_data            import (fetch_news, build_news_search_links, fetch_sec_cik,
+                                  fetch_sec_filings, extract_customers_suppliers,
+                                  generate_swot, get_regulatory_info)
 
 # ─── Page config ─────────────────────────────────────────────────────────────
 try:
@@ -89,16 +95,16 @@ st.markdown(TOOLTIP_CSS + """
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
 
-def fmt(v, pct=False, dec=2, prefix=""):
+def fmt(v, pct=False, dec=2, prefix="", native_ccy="USD"):
     if v is None or (isinstance(v, float) and (np.isnan(v) or np.isinf(v))):
         return "—"
     if pct:
         return f"{v:+.1%}" if abs(v) < 10 else f"{v:.1%}"
     if prefix == "$":
-        if abs(v) >= 1e12: return f"${v/1e12:.2f}T"
-        if abs(v) >= 1e9:  return f"${v/1e9:.2f}B"
-        if abs(v) >= 1e6:  return f"${v/1e6:.2f}M"
-        return f"${v:,.{dec}f}"
+        # Use display currency from session state if available
+        disp_ccy = st.session_state.get("display_ccy_code", "USD")
+        rates    = st.session_state.get("fx_rates", {})
+        return fmt_currency(v, native_ccy, disp_ccy, rates)
     return f"{v:.{dec}f}"
 
 def signal_color(signal):
@@ -187,12 +193,25 @@ def build_price_chart(hist, ind, ticker):
     if isinstance(macd_h, pd.Series) and not macd_h.dropna().empty:
         hc = ["#26a69a" if v >= 0 else "#ef5350" for v in macd_h]
         fig.add_trace(go.Bar(x=macd_h.index, y=macd_h, marker_color=hc, opacity=0.7, showlegend=False), row=4, col=1)
-    fig.update_layout(height=700, template="plotly_dark", title=f"{ticker} — Technical Analysis",
-        title_font_size=15, margin=dict(l=50, r=30, t=50, b=30),
-        xaxis_rangeslider_visible=False, legend=dict(orientation="h", y=1.06, x=0),
-        paper_bgcolor="#0e1117", plot_bgcolor="#1a1d2e")
-    fig.update_yaxes(showgrid=True, gridcolor="rgba(255,255,255,0.05)")
-    fig.update_xaxes(showgrid=False)
+    fig.update_layout(
+        height=760, template="plotly_dark",
+        title=dict(text=f"{ticker} — Technical Analysis", font_size=15, x=0.01),
+        margin=dict(l=50, r=30, t=60, b=40),
+        xaxis_rangeslider_visible=False,
+        legend=dict(orientation="h", y=1.07, x=0, font_size=11,
+                    bgcolor="rgba(0,0,0,0)", borderwidth=0),
+        paper_bgcolor="#0e1117", plot_bgcolor="#1a1d2e",
+        hoverlabel=dict(bgcolor="#1a1d2e", font_size=12),
+    )
+    # Increase spacing between subplots for mobile
+    fig.update_layout(
+        yaxis1=dict(domain=[0.42, 1.00], showgrid=True, gridcolor="rgba(255,255,255,0.06)"),
+        yaxis2=dict(domain=[0.28, 0.40], showgrid=True, gridcolor="rgba(255,255,255,0.06)"),
+        yaxis3=dict(domain=[0.15, 0.26], showgrid=True, gridcolor="rgba(255,255,255,0.06)"),
+        yaxis4=dict(domain=[0.00, 0.13], showgrid=True, gridcolor="rgba(255,255,255,0.06)"),
+    )
+    fig.update_xaxes(showgrid=False, tickfont=dict(size=11))
+    fig.update_yaxes(tickfont=dict(size=11))
     return fig
 
 
@@ -208,10 +227,15 @@ def build_financials_chart(fund, ticker):
         vals = [d.get(y) for y in years]
         if any(v for v in vals):
             fig.add_trace(go.Scatter(x=years, y=vals, name=lbl+" Margin", line=dict(color=col, width=2)), row=2, col=1)
-    fig.update_layout(height=420, template="plotly_dark", barmode="group",
-        margin=dict(l=40, r=20, t=40, b=20), paper_bgcolor="#0e1117", plot_bgcolor="#1a1d2e",
-        legend=dict(orientation="h", y=1.08))
-    fig.update_yaxes(showgrid=True, gridcolor="rgba(255,255,255,0.05)")
+    fig.update_layout(
+        height=460, template="plotly_dark", barmode="group",
+        margin=dict(l=50, r=20, t=50, b=40),
+        paper_bgcolor="#0e1117", plot_bgcolor="#1a1d2e",
+        legend=dict(orientation="h", y=1.10, font_size=11),
+        hoverlabel=dict(bgcolor="#1a1d2e", font_size=12),
+    )
+    fig.update_yaxes(showgrid=True, gridcolor="rgba(255,255,255,0.06)", tickfont=dict(size=11))
+    fig.update_xaxes(tickfont=dict(size=11))
     return fig
 
 
@@ -428,6 +452,212 @@ def render_earnings_section(data, ticker, earn_rows, cal_info, estimates, eps_tr
         st.info("No historical earnings data available for this ticker.")
 
 
+
+# ─── Intelligence Tab ────────────────────────────────────────────────────────
+
+def render_intelligence_tab(ticker, info, scoring, signals, sentiment, fund, comparison):
+    """SWOT analysis, customers/suppliers, regulatory filings."""
+    country      = info.get("country", "")
+    company_name = info.get("shortName", ticker)
+    description  = info.get("longBusinessSummary", "")
+
+    # ── SWOT ─────────────────────────────────────────────────────────────────
+    st.markdown(section_header("♟️ Dynamic SWOT Analysis"), unsafe_allow_html=True)
+    st.caption("Generated from live financial data, technical signals, peer comparison, and sentiment.")
+
+    swot = generate_swot(info, scoring, signals, sentiment, fund, comparison)
+
+    sw_col, ot_col = st.columns(2)
+    with sw_col:
+        st.markdown("""
+        <div style='background:#0d2b1a;border:1px solid #2d5a3d;border-radius:10px;
+                     padding:14px 16px;margin-bottom:12px'>
+          <div style='color:#68d391;font-weight:700;font-size:14px;margin-bottom:8px'>
+            💪 STRENGTHS
+          </div>""", unsafe_allow_html=True)
+        for s in swot["strengths"]:
+            st.markdown(f"<div style='font-size:12px;color:#c6f6d5;padding:3px 0;border-bottom:1px solid #2d5a3d'>{s}</div>", unsafe_allow_html=True)
+        st.markdown("</div>", unsafe_allow_html=True)
+
+        st.markdown("""
+        <div style='background:#2d1b00;border:1px solid #5a3d0d;border-radius:10px;
+                     padding:14px 16px;margin-bottom:12px'>
+          <div style='color:#fbd38d;font-weight:700;font-size:14px;margin-bottom:8px'>
+            🌱 OPPORTUNITIES
+          </div>""", unsafe_allow_html=True)
+        for o in swot["opportunities"]:
+            st.markdown(f"<div style='font-size:12px;color:#fefcbf;padding:3px 0;border-bottom:1px solid #5a3d0d'>{o}</div>", unsafe_allow_html=True)
+        st.markdown("</div>", unsafe_allow_html=True)
+
+    with ot_col:
+        st.markdown("""
+        <div style='background:#2d1a1a;border:1px solid #5a2d2d;border-radius:10px;
+                     padding:14px 16px;margin-bottom:12px'>
+          <div style='color:#fc8181;font-weight:700;font-size:14px;margin-bottom:8px'>
+            ⚠️ WEAKNESSES
+          </div>""", unsafe_allow_html=True)
+        for w in swot["weaknesses"]:
+            st.markdown(f"<div style='font-size:12px;color:#fed7d7;padding:3px 0;border-bottom:1px solid #5a2d2d'>{w}</div>", unsafe_allow_html=True)
+        st.markdown("</div>", unsafe_allow_html=True)
+
+        st.markdown("""
+        <div style='background:#1a1a2d;border:1px solid #3d2d5a;border-radius:10px;
+                     padding:14px 16px;margin-bottom:12px'>
+          <div style='color:#b794f4;font-weight:700;font-size:14px;margin-bottom:8px'>
+            ⚡ THREATS
+          </div>""", unsafe_allow_html=True)
+        for t in swot["threats"]:
+            st.markdown(f"<div style='font-size:12px;color:#e9d8fd;padding:3px 0;border-bottom:1px solid #3d2d5a'>{t}</div>", unsafe_allow_html=True)
+        st.markdown("</div>", unsafe_allow_html=True)
+
+    # ── Customers & Suppliers ────────────────────────────────────────────────
+    st.markdown(section_header("🤝 Customers & Suppliers"), unsafe_allow_html=True)
+    cs = extract_customers_suppliers(description)
+
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown("**👥 Key Customers / End Markets**")
+        if cs["customers"]:
+            for name in cs["customers"]:
+                st.markdown(f"<div style='font-size:12px;color:#90cdf4;padding:2px 0'>• {name}</div>",
+                            unsafe_allow_html=True)
+        if cs["customer_notes"]:
+            with st.expander("From business description", expanded=False):
+                st.markdown(f"<div style='font-size:12px;color:#a0aec0;line-height:1.6'>{cs['customer_notes']}</div>",
+                            unsafe_allow_html=True)
+        if not cs["customers"] and not cs["customer_notes"]:
+            st.caption("Customer data not available in public description. Check the SEC 10-K filing below.")
+
+    with c2:
+        st.markdown("**🏭 Key Suppliers / Partners**")
+        if cs["suppliers"]:
+            for name in cs["suppliers"]:
+                st.markdown(f"<div style='font-size:12px;color:#90cdf4;padding:2px 0'>• {name}</div>",
+                            unsafe_allow_html=True)
+        if cs["supplier_notes"]:
+            with st.expander("From business description", expanded=False):
+                st.markdown(f"<div style='font-size:12px;color:#a0aec0;line-height:1.6'>{cs['supplier_notes']}</div>",
+                            unsafe_allow_html=True)
+        if not cs["suppliers"] and not cs["supplier_notes"]:
+            st.caption("Supplier data not in public description. Check the 10-K/annual report filing below.")
+
+    # ── Regulatory Filings ───────────────────────────────────────────────────
+    st.markdown(section_header("📁 Regulatory Filings & Disclosures"), unsafe_allow_html=True)
+
+    reg = get_regulatory_info(country, company_name)
+    if reg:
+        st.markdown(
+            f"{reg['icon']} **{reg['name']}** — "
+            f"[Search filings for {company_name}]({reg['url']})",
+            unsafe_allow_html=False
+        )
+
+    # SEC EDGAR for US stocks
+    exchange = info.get("exchange", "")
+    is_us = country == "United States" or exchange in ["NMS","NYQ","NGM","PCX","BTS","ASE"]
+    if is_us:
+        st.markdown("**🇺🇸 SEC EDGAR (US)**")
+        with st.spinner("Looking up SEC filings…"):
+            cik = fetch_sec_cik(ticker)
+        if cik:
+            filings_10k = fetch_sec_filings(cik, "10-K", count=3)
+            filings_10q = fetch_sec_filings(cik, "10-Q", count=3)
+            c1, c2 = st.columns(2)
+            with c1:
+                st.markdown("**Annual Reports (10-K)**")
+                if filings_10k:
+                    for f in filings_10k:
+                        st.markdown(f"[📄 10-K — {f['date']}]({f['index']})")
+                else:
+                    st.markdown(f"[🔍 Search 10-K filings on EDGAR](https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&company={urllib.parse.quote(company_name)}&CIK=&type=10-K&dateb=&owner=include&count=5)")
+            with c2:
+                st.markdown("**Quarterly Reports (10-Q)**")
+                if filings_10q:
+                    for f in filings_10q:
+                        st.markdown(f"[📄 10-Q — {f['date']}]({f['index']})")
+                else:
+                    edgar_url = f"https://efts.sec.gov/LATEST/search-index?q=%22{urllib.parse.quote(ticker)}%22&forms=10-Q"
+                    st.markdown(f"[🔍 Search 10-Q filings on EDGAR]({edgar_url})")
+            # Direct EDGAR company page
+            st.markdown(f"[🏛️ Full EDGAR filing history for CIK {cik}](https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK={cik}&type=&dateb=&owner=include&count=40)")
+        else:
+            name_enc = urllib.parse.quote(company_name)
+            st.markdown(f"[🔍 Search EDGAR for {company_name}](https://efts.sec.gov/LATEST/search-index?q=%22{name_enc}%22&forms=10-K)")
+
+    # Additional IR link
+    ir_website = info.get("irWebsite") or info.get("website")
+    if ir_website:
+        st.markdown(f"[🌐 Investor Relations Website]({ir_website})")
+
+
+# ─── News Tab ────────────────────────────────────────────────────────────────
+
+def render_news_tab(ticker, info, news_items):
+    """Recent news + links to free news sources."""
+    import urllib.parse
+    company_name = info.get("shortName", ticker)
+
+    # ── Free news source links ────────────────────────────────────────────────
+    st.markdown(section_header("🔗 Free News Sources"), unsafe_allow_html=True)
+    links = build_news_search_links(ticker, company_name)
+    cols = st.columns(3)
+    for i, link in enumerate(links):
+        with cols[i % 3]:
+            st.markdown(
+                f"""<a href="{link['url']}" target="_blank"
+                   style="display:block;background:#1a1d2e;border:1px solid #3a3f5c;
+                   border-radius:8px;padding:10px 14px;text-decoration:none;
+                   color:#90cdf4;font-size:13px;margin-bottom:8px;text-align:center">
+                   {link['icon']} {link['source']}</a>""",
+                unsafe_allow_html=True
+            )
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # ── Yahoo Finance news feed ───────────────────────────────────────────────
+    st.markdown(section_header("📰 Recent News"), unsafe_allow_html=True)
+
+    if news_items:
+        import datetime
+        for item in news_items:
+            title     = item.get("title", "")
+            link      = item.get("link", "")
+            publisher = item.get("publisher", "")
+            ts        = item.get("providerPublishTime", 0)
+            if not title or not link:
+                continue
+            date_str = ""
+            if ts:
+                try:
+                    date_str = datetime.datetime.fromtimestamp(ts).strftime("%b %d, %Y")
+                except Exception:
+                    pass
+            st.markdown(
+                f"""<div style='background:#1a1d2e;border:1px solid #2d3748;border-radius:8px;
+                    padding:12px 16px;margin-bottom:8px'>
+                  <a href="{link}" target="_blank"
+                     style="color:#90cdf4;font-size:13px;font-weight:600;text-decoration:none">
+                    {title}
+                  </a>
+                  <div style="font-size:11px;color:#718096;margin-top:5px">
+                    {publisher}{"  ·  " + date_str if date_str else ""}
+                  </div>
+                </div>""",
+                unsafe_allow_html=True
+            )
+    else:
+        st.info("No recent news found. Use the source links above to search manually.")
+
+    # ── Earnings calendar link ────────────────────────────────────────────────
+    st.markdown(section_header("📅 Earnings Calendar Links"), unsafe_allow_html=True)
+    tick_enc = urllib.parse.quote(ticker)
+    st.markdown(
+        f"[📅 Earnings Whispers](https://www.earningswhispers.com/stocks/{ticker.lower()})  ·  "
+        f"[📊 Seeking Alpha Earnings](https://seekingalpha.com/symbol/{tick_enc}/earnings)  ·  "
+        f"[🗓️ Yahoo Finance Calendar](https://finance.yahoo.com/quote/{tick_enc}/financials/)"
+    )
+
+
 # ─── Per-stock Deep Dive ──────────────────────────────────────────────────────
 
 def render_stock_tab(ticker, data, dcf, fund, indicators, signals,
@@ -449,7 +679,8 @@ def render_stock_tab(ticker, data, dcf, fund, indicators, signals,
     eps_fs = "beat" if beat_pct and beat_pct > 0.6 else ("miss" if beat_pct and beat_pct < 0.4 else "inline")
 
     tabs = st.tabs(["📋 Overview", "💰 Financials & DCF", "📊 Valuation & Peers",
-                     "📈 Technical Analysis", "🎯 Sentiment", "📅 Earnings & Forecasts"])
+                     "📈 Technical Analysis", "🎯 Sentiment", "📅 Earnings & Forecasts",
+                     "🏢 Intelligence", "📰 News"])
 
     # ── Overview ──────────────────────────────────────────────────────────────
     with tabs[0]:
@@ -541,15 +772,87 @@ def render_stock_tab(ticker, data, dcf, fund, indicators, signals,
         st.caption(f"Current price: **{fmt(dcf.get('current_price',0) or cp, prefix='$')}** · "
                    f"FCF base: {fmt((dcf.get('fcf_list',[None])[0]), prefix='$') if dcf.get('fcf_list') else '—'}")
 
-        with st.expander("ℹ️ How DCF Models Work"):
-            st.markdown(tooltip_html("terminal_value","Terminal Value","",""), unsafe_allow_html=True)
+        with st.expander("📖 In-Depth: How All 4 DCF Models Work"):
             st.markdown("""
-            | Model | Rate Used | Best For |
-            |---|---|---|
-            | **WACC DCF** | Blended debt+equity cost | Companies with meaningful debt |
-            | **CAPM DCF** | Cost of equity (Ke = Rfr + β×5.5%) | Pure equity / no debt analysis |
-            | **Fixed Rate** | Your chosen rate (sidebar) | Sensitivity testing |
-            | **Two-Stage FCF** | CAPM rate, 2 growth phases | High-growth companies |
+### What is a DCF?
+A **Discounted Cash Flow (DCF)** model estimates the intrinsic value of a stock by projecting future Free Cash Flows and discounting them back to today's value. The core principle: a dollar received in the future is worth less than a dollar today.
+
+**The formula:**
+```
+Intrinsic Value = Σ [FCF_t / (1+r)^t]  +  Terminal Value / (1+r)^n
+```
+Where `r` = discount rate, `t` = year, `n` = total years modelled.
+
+---
+
+### 🔵 Model 1 — WACC DCF
+**Best for:** Companies with significant debt (banks, industrials, utilities)
+
+The **Weighted Average Cost of Capital** blends the cost of equity and after-tax cost of debt, weighted by capital structure:
+```
+WACC = (E/V × Ke) + (D/V × Kd × (1 − Tax Rate))
+Ke   = Risk-Free Rate + β × Market Risk Premium
+Kd   = Interest Expense / Total Debt
+```
+This tool uses **5.5% as the Market Risk Premium** (long-run historical average). The risk-free rate is pulled live from the US 10-year Treasury (^TNX).
+
+**Limitation:** WACC requires accurate debt/equity data and is sensitive to beta estimation.
+
+---
+
+### 🟢 Model 2 — CAPM DCF
+**Best for:** Asset-light, low-debt companies (tech, software, consumer brands)
+
+Uses only the **cost of equity** as the discount rate — appropriate when the company is primarily equity-funded:
+```
+Ke = Risk-Free Rate + β × 5.5%
+```
+For a stock with β=1.2 and Rfr=4.5%: Ke = 4.5% + 1.2×5.5% = **11.1%**
+
+**Limitation:** Ignores the benefit of tax-deductible debt financing; may overstate the discount rate for leveraged companies.
+
+---
+
+### 🟡 Model 3 — Fixed Rate DCF
+**Best for:** Sensitivity analysis and personal required-return testing
+
+You set the discount rate manually via the sidebar slider. This lets you answer: *"What is this company worth if I require a 12% annual return?"*
+
+Common choices:
+- **8–10%:** Conservative long-term investor
+- **10–12%:** Standard value investor hurdle rate
+- **12–15%:** Aggressive / small-cap premium
+
+---
+
+### 🔴 Model 4 — Two-Stage FCF
+**Best for:** High-growth companies transitioning to mature growth
+
+Projects two distinct growth phases before terminal value:
+```
+Stage 1 (Years 1–5):  High growth (based on historical FCF CAGR)
+Stage 2 (Years 6–10): Fading growth (Stage 1 rate × 0.4, min 2.5%)
+Terminal:             Gordon Growth Model at 2.5% perpetuity
+```
+Example for a company with 18% historical FCF growth:
+- Stage 1: 18% for 5 years
+- Stage 2: 7.2% fade over 5 years
+- Terminal: 2.5% forever
+
+**Limitation:** Most sensitive model — small changes in Stage 1 growth rate cause large IV swings.
+
+---
+
+### ⚠️ Why the 4 models give different values
+Each model answers a **different question**:
+| | WACC | CAPM | Fixed | Two-Stage |
+|---|---|---|---|---|
+| Includes debt cost? | ✅ | ❌ | Partially | Partially |
+| Uses market beta? | ✅ | ✅ | ❌ | ✅ |
+| Models growth phases? | 2 | 2 | 2 | 3 |
+| Best anchors to use | Enterprise value | Equity value | Hurdle rate | Growth story |
+
+**A conservative investor** takes the lowest of the 4. **A bull case** takes the highest. The range itself tells you the **uncertainty band** around fair value.
             """)
 
     # ── Valuation & Peers ─────────────────────────────────────────────────────
@@ -674,6 +977,14 @@ def render_stock_tab(ticker, data, dcf, fund, indicators, signals,
     # ── Earnings & Forecasts ──────────────────────────────────────────────────
     with tabs[5]:
         render_earnings_section(data, ticker, earn_rows, cal_info, estimates, eps_trend_data)
+
+    # ── Intelligence (SWOT + Customers/Suppliers + Filings) ───────────────────
+    with tabs[6]:
+        render_intelligence_tab(ticker, info, scoring, signals, sentiment, fund, comparison)
+
+    # ── News ──────────────────────────────────────────────────────────────────
+    with tabs[7]:
+        render_news_tab(ticker, info, data.get("news", []))
 
 
 # ─── Summary Dashboard ───────────────────────────────────────────────────────
@@ -871,6 +1182,13 @@ def main():
             for k in ["results","rfr","show_deploy"]:
                 st.session_state.pop(k, None)
             st.rerun()
+
+        st.markdown("---")
+        st.markdown("---")
+        st.markdown("**🌍 Display Currency**")
+        selected_ccy, fx_rates = sidebar_currency_selector()
+        st.session_state["display_ccy_code"] = selected_ccy
+        st.session_state["fx_rates"]         = fx_rates
 
         st.markdown("---")
         st.caption("Data: Yahoo Finance · Cache: 1h\n"
