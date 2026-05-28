@@ -1,14 +1,12 @@
 """
-tooltips.py — Metric definitions, formulas, and CSS hover tooltips.
+tooltips.py — Metric definitions and CSS hover tooltips.
 
-Definitions are written based on standard financial analysis principles
-(consistent with how sites like Investopedia and Yahoo Finance define metrics).
+Every METRICS key matches exactly what is shown in the UI.
+Definitions align with Investopedia and Yahoo Finance standards.
 """
 
-# ─── Global CSS (inject once at app startup) ──────────────────────────────────
 TOOLTIP_CSS = """
 <style>
-/* ── Tooltip container ─────────────────────────────────── */
 .tt-wrap {
   position: relative;
   display: inline-flex;
@@ -36,12 +34,12 @@ TOOLTIP_CSS = """
   z-index: 9999;
   left: 20px;
   top: -8px;
-  width: 310px;
+  width: 320px;
   background: #1a1d2e;
   border: 1px solid #3a3f5c;
   border-radius: 10px;
   padding: 12px 14px;
-  box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+  box-shadow: 0 8px 24px rgba(0,0,0,0.55);
   transition: opacity 0.15s ease, visibility 0.15s ease;
   pointer-events: none;
 }
@@ -50,21 +48,17 @@ TOOLTIP_CSS = """
   visibility: visible;
   opacity: 1;
 }
-/* box positioning variants */
-.tt-box.tt-left  { left: auto; right: 20px; }
-.tt-box.tt-up    { top: auto; bottom: 20px; }
-
-/* ── Tooltip internals ─────────────────────────────────── */
+.tt-box.tt-left { left: auto; right: 20px; }
+.tt-box.tt-up   { top: auto; bottom: 20px; }
 .tt-name    { font-size: 13px; font-weight: 700; color: #e2e8f0; margin-bottom: 5px; }
-.tt-def     { font-size: 12px; color: #a0aec0; line-height: 1.5; margin-bottom: 6px; }
+.tt-def     { font-size: 12px; color: #a0aec0; line-height: 1.55; margin-bottom: 6px; }
 .tt-formula { font-size: 11px; font-family: monospace;
               background: #0e1117; border-radius: 5px;
               padding: 5px 8px; color: #81e6d9; margin-bottom: 6px; }
 .tt-range   { font-size: 11px; color: #68d391; margin-bottom: 4px; }
 .tt-warn    { font-size: 11px; color: #fc8181; }
-.tt-src     { font-size: 10px; color: #4a5568; margin-top: 5px; border-top: 1px solid #2d3748; padding-top: 4px; }
-
-/* ── Metric row ────────────────────────────────────────── */
+.tt-src     { font-size: 10px; color: #4a5568; margin-top: 5px;
+              border-top: 1px solid #2d3748; padding-top: 4px; }
 .mrow {
   display: flex;
   justify-content: space-between;
@@ -78,8 +72,6 @@ TOOLTIP_CSS = """
 .mrow-beat  { color: #68d391; font-weight: 700; }
 .mrow-miss  { color: #fc8181; font-weight: 700; }
 .mrow-line  { color: #fbd38d; font-weight: 600; }
-
-/* ── Forecast badge ────────────────────────────────────── */
 .fc-badge {
   display: inline-block;
   font-size: 10px; font-weight: 700;
@@ -90,19 +82,15 @@ TOOLTIP_CSS = """
 .fc-miss   { background: rgba(252,129,129,.12); color: #fc8181; border: 1px solid #fc8181; }
 .fc-inline { background: rgba(251,211,141,.12); color: #fbd38d; border: 1px solid #fbd38d; }
 .fc-na     { background: rgba(160,174,192,.1);  color: #a0aec0; border: 1px solid #4a5568; }
-
-/* ── Earnings date card ───────────────────────────────── */
 .earn-card {
   background: #1a1d2e; border: 1px solid #3a3f5c; border-radius: 8px;
   padding: 10px 14px; margin: 6px 0; font-size: 13px;
 }
-.earn-date  { color: #a0aec0; font-size: 11px; margin-bottom: 3px; }
-.earn-act   { color: #68d391; font-weight: 700; }
-.earn-est   { color: #a0aec0; }
-.earn-beat  { color: #68d391; }
-.earn-miss  { color: #fc8181; }
-
-/* ── Mobile overrides ─────────────────────────────────── */
+.earn-date { color: #a0aec0; font-size: 11px; margin-bottom: 3px; }
+.earn-act  { color: #68d391; font-weight: 700; }
+.earn-est  { color: #a0aec0; }
+.earn-beat { color: #68d391; }
+.earn-miss { color: #fc8181; }
 @media (max-width: 640px) {
   .tt-box { width: 260px; font-size: 11px; }
   .mrow   { font-size: 12px; }
@@ -111,261 +99,693 @@ TOOLTIP_CSS = """
 """
 
 
-# ─── Metric Definitions ───────────────────────────────────────────────────────
 METRICS: dict = {
 
-    # ── Valuation Ratios ──────────────────────────────────────────────────────
+    # ── VALUATION RATIOS ─────────────────────────────────────────────────────
+
     "pe_trailing": {
-        "name": "P/E Ratio (Trailing 12M)",
-        "definition": "How much investors pay for each dollar of earnings over the past 12 months. One of the most widely used valuation metrics.",
-        "formula": "P/E = Current Price ÷ EPS (last 12 months)",
-        "good": "10–20× value / 20–35× growth / 35×+ speculative",
-        "warn": "Negative P/E means the company is losing money.",
-        "source": "Yahoo Finance · Investopedia",
+        "name": "P/E Ratio — Trailing 12 Months",
+        "definition": (
+            "Price-to-Earnings ratio based on actual earnings reported over "
+            "the last 12 months. Tells you how many dollars investors are paying "
+            "for each dollar of profit the company has already generated."
+        ),
+        "formula": "P/E = Current Share Price ÷ EPS (trailing 12M)",
+        "good": "< 15× value territory · 15–25× fair · 25–40× growth premium · > 40× speculative",
+        "warn": (
+            "A negative P/E means the company is loss-making. "
+            "Always compare P/E within the same sector — tech trades higher than utilities."
+        ),
+        "source": "Yahoo Finance · Investopedia — Price-to-Earnings Ratio",
     },
+
     "pe_forward": {
-        "name": "Forward P/E",
-        "definition": "Like trailing P/E but uses next 12 months' estimated earnings. More useful for fast-growing companies since it reflects future profitability expectations.",
-        "formula": "Forward P/E = Current Price ÷ Estimated EPS (next 12M)",
-        "good": "Lower forward P/E vs trailing P/E = earnings growth expected",
-        "warn": "Based on analyst estimates which can be wrong.",
-        "source": "Yahoo Finance · Investopedia",
+        "name": "Forward P/E Ratio",
+        "definition": (
+            "Like trailing P/E but uses the next 12 months' consensus earnings estimate "
+            "instead of historical earnings. Shows what the market is paying for future profits. "
+            "Also used here for analyst price targets — the displayed value depends on context."
+        ),
+        "formula": "Forward P/E = Current Share Price ÷ Estimated EPS (next 12M)",
+        "good": (
+            "Forward P/E < Trailing P/E → earnings expected to grow. "
+            "< 15× attractive · 15–25× fair · > 30× expensive unless high-growth"
+        ),
+        "warn": (
+            "Based entirely on analyst estimates which are often wrong. "
+            "Check how estimates have been revised over the last 90 days."
+        ),
+        "source": "Yahoo Finance · Investopedia — Forward P/E",
     },
+
     "peg": {
-        "name": "PEG Ratio",
-        "definition": "Adjusts the P/E ratio for earnings growth rate. Helps identify if a high P/E stock is justified by its growth rate.",
-        "formula": "PEG = P/E ÷ Annual EPS Growth Rate (%)",
-        "good": "< 1 = undervalued relative to growth · 1–2 = fairly valued · > 2 = expensive",
-        "warn": "Not useful for companies with negative or zero growth.",
-        "source": "Investopedia",
+        "name": "PEG Ratio — Price/Earnings to Growth",
+        "definition": (
+            "Adjusts the P/E ratio for the company's expected earnings growth rate. "
+            "A P/E of 30× is very different for a 5% grower vs a 30% grower — "
+            "PEG captures that difference. Popularised by Peter Lynch."
+        ),
+        "formula": "PEG = Trailing P/E ÷ Annual EPS Growth Rate (%)",
+        "good": (
+            "< 1.0 → growth available at a discount (Peter Lynch's 'buy' signal) "
+            "· 1.0–2.0 → fairly valued for growth "
+            "· > 2.0 → expensive relative to growth rate"
+        ),
+        "warn": (
+            "Not meaningful for companies with negative or near-zero earnings growth. "
+            "Growth rate estimate source varies — check what period is used."
+        ),
+        "source": "Investopedia — PEG Ratio",
     },
+
     "ev_ebitda": {
         "name": "EV / EBITDA",
-        "definition": "Enterprise Value divided by Earnings Before Interest, Tax, Depreciation & Amortisation. Popular for comparing companies with different debt structures.",
-        "formula": "EV/EBITDA = (Market Cap + Debt − Cash) ÷ EBITDA",
-        "good": "< 10× cheap · 10–15× fair · > 20× expensive (sector-dependent)",
-        "warn": "CapEx-heavy industries often trade at lower EV/EBITDA.",
-        "source": "Yahoo Finance · Investopedia",
-    },
-    "ev_revenue": {
-        "name": "EV / Revenue",
-        "definition": "Compares a company's total enterprise value to its annual revenue. Useful for unprofitable growth companies where EBITDA is negative.",
-        "formula": "EV/Revenue = Enterprise Value ÷ Total Revenue (TTM)",
-        "good": "< 2× cheap · 2–5× typical SaaS/tech · > 10× high-growth premium",
-        "warn": "High EV/Revenue is only justified if the business has high gross margins.",
-        "source": "Yahoo Finance · Investopedia",
-    },
-    "price_book": {
-        "name": "Price / Book (P/B)",
-        "definition": "Compares stock price to the net asset value per share. Widely used for financial stocks. Below 1× may indicate undervaluation or balance sheet issues.",
-        "formula": "P/B = Stock Price ÷ Book Value per Share",
-        "good": "< 1× deep value · 1–3× reasonable · > 5× growth premium",
-        "warn": "Book value can be misleading for asset-light businesses (tech/services).",
-        "source": "Yahoo Finance · Investopedia",
-    },
-    "price_sales": {
-        "name": "Price / Sales (P/S)",
-        "definition": "Market cap divided by annual revenue. Useful when earnings are negative. Reflects how much investors pay per dollar of revenue.",
-        "formula": "P/S = Market Cap ÷ Annual Revenue",
-        "good": "< 1× deep value · 1–3× reasonable · > 10× high-growth premium",
-        "warn": "P/S ignores profitability — a low-margin company with high P/S is risky.",
-        "source": "Yahoo Finance · Investopedia",
+        "definition": (
+            "Enterprise Value divided by Earnings Before Interest, Tax, Depreciation "
+            "and Amortisation. Preferred over P/E for comparing companies with different "
+            "debt levels or tax situations, as it strips out financing and accounting choices."
+        ),
+        "formula": (
+            "EV = Market Cap + Total Debt − Cash & Equivalents\n"
+            "EV/EBITDA = Enterprise Value ÷ EBITDA (trailing 12M)"
+        ),
+        "good": (
+            "< 8× cheap · 8–14× reasonable · 14–22× elevated · > 22× expensive. "
+            "Benchmarks vary widely: tech ~20×, industrials ~10×, utilities ~12×"
+        ),
+        "warn": (
+            "EBITDA ignores capital expenditure — compare with EV/EBIT or FCF yield "
+            "for capital-intensive businesses like manufacturing or telecoms."
+        ),
+        "source": "Yahoo Finance · Investopedia — EV/EBITDA",
     },
 
-    # ── Profitability ─────────────────────────────────────────────────────────
+    "ev_revenue": {
+        "name": "EV / Revenue (Price-to-Sales)",
+        "definition": (
+            "Enterprise Value divided by total annual revenue. Used when EBITDA is "
+            "negative (early-stage, high-growth, or loss-making companies). "
+            "Reflects how much investors pay per dollar of top-line revenue."
+        ),
+        "formula": "EV/Revenue = Enterprise Value ÷ Total Revenue (trailing 12M)",
+        "good": (
+            "< 1× deep value · 1–3× reasonable · 3–8× typical high-margin SaaS/tech "
+            "· > 10× only justified with very high gross margins and rapid growth"
+        ),
+        "warn": (
+            "A low EV/Revenue is meaningless if gross margins are also low. "
+            "A retailer at 0.3× may be more expensive than a SaaS firm at 8× on a margin-adjusted basis."
+        ),
+        "source": "Yahoo Finance · Investopedia — EV/Revenue",
+    },
+
+    "price_book": {
+        "name": "Price / Book Value (P/B)",
+        "definition": (
+            "Compares the stock price to the company's net asset value per share "
+            "(total assets minus total liabilities). Widely used for banks and "
+            "financial companies where assets are the business."
+        ),
+        "formula": (
+            "Book Value per Share = (Total Assets − Total Liabilities) ÷ Shares Outstanding\n"
+            "P/B = Current Share Price ÷ Book Value per Share"
+        ),
+        "good": (
+            "< 1× trading below book value (potential deep value or distress) "
+            "· 1–3× reasonable · > 5× growth/intangible premium"
+        ),
+        "warn": (
+            "Book value is unreliable for asset-light businesses (software, brands, "
+            "professional services) where intellectual property isn't on the balance sheet."
+        ),
+        "source": "Yahoo Finance · Investopedia — Price-to-Book Ratio",
+    },
+
+    "price_sales": {
+        "name": "Price / Sales (P/S Ratio)",
+        "definition": (
+            "Market capitalisation divided by annual revenue. Unlike P/E, it works "
+            "even when a company has no earnings, making it useful for early-stage "
+            "or currently unprofitable businesses."
+        ),
+        "formula": "P/S = Market Capitalisation ÷ Total Revenue (trailing 12M)",
+        "good": (
+            "< 1× deep value · 1–3× reasonable for most sectors "
+            "· 3–10× typical for high-margin tech · > 10× requires very high growth justification"
+        ),
+        "warn": (
+            "P/S completely ignores profitability. "
+            "A company with 5% net margins at 10× P/S is far more expensive than "
+            "it looks versus one with 40% margins at the same multiple."
+        ),
+        "source": "Yahoo Finance · Investopedia — Price-to-Sales",
+    },
+
+    # ── PROFITABILITY ────────────────────────────────────────────────────────
+
     "gross_margin": {
-        "name": "Gross Margin",
-        "definition": "Percentage of revenue remaining after subtracting cost of goods sold. Higher margins indicate pricing power and competitive advantage.",
-        "formula": "Gross Margin = (Revenue − COGS) ÷ Revenue × 100",
-        "good": "> 60% software/pharma · > 35% industrials · > 20% retail",
-        "warn": "Declining gross margin over multiple years is a red flag.",
-        "source": "Yahoo Finance",
+        "name": "Gross Profit Margin",
+        "definition": (
+            "Revenue remaining after subtracting the direct cost of producing goods "
+            "or services (COGS). The first line of profitability — shows pricing power "
+            "and unit economics before overheads like sales, R&D, or admin."
+        ),
+        "formula": "Gross Margin = (Revenue − Cost of Goods Sold) ÷ Revenue × 100%",
+        "good": (
+            "> 70% software / pharma / luxury goods "
+            "· 40–70% branded consumer / medical devices "
+            "· 20–40% industrials / retail "
+            "· < 20% commodities / low-margin retail"
+        ),
+        "warn": (
+            "Declining gross margin over consecutive years suggests rising input costs, "
+            "pricing pressure from competitors, or product mix deterioration."
+        ),
+        "source": "Yahoo Finance · Investopedia — Gross Margin",
     },
+
     "operating_margin": {
-        "name": "Operating Margin",
-        "definition": "Profitability after operating expenses but before interest and taxes. Shows how efficiently management runs the core business.",
-        "formula": "Operating Margin = Operating Income ÷ Revenue × 100",
-        "good": "> 20% excellent · 10–20% good · < 5% thin",
-        "warn": "Compare within industry — software margins differ from retail.",
-        "source": "Yahoo Finance · Investopedia",
+        "name": "Operating Profit Margin (EBIT Margin)",
+        "definition": (
+            "Profit from core business operations as a percentage of revenue, "
+            "after deducting COGS and operating expenses (R&D, sales, admin) "
+            "but before interest expense and income taxes. "
+            "The best measure of management's operational efficiency."
+        ),
+        "formula": "Operating Margin = Operating Income (EBIT) ÷ Revenue × 100%",
+        "good": (
+            "> 25% excellent operational leverage "
+            "· 15–25% strong · 8–15% adequate · < 5% thin / at-risk"
+        ),
+        "warn": (
+            "Compare only within the same industry. "
+            "A 10% operating margin is excellent for a grocer but poor for a software company."
+        ),
+        "source": "Yahoo Finance · Investopedia — Operating Margin",
     },
+
     "net_margin": {
         "name": "Net Profit Margin",
-        "definition": "The final bottom-line profit as a percentage of revenue, after all expenses including taxes and interest.",
-        "formula": "Net Margin = Net Income ÷ Revenue × 100",
-        "good": "> 20% excellent · 10–20% strong · 5–10% adequate · < 5% thin",
-        "warn": "Net margin can be distorted by one-time charges or tax events.",
-        "source": "Yahoo Finance · Investopedia",
+        "definition": (
+            "The final bottom-line profit as a percentage of revenue after ALL expenses: "
+            "COGS, operating costs, interest on debt, and income taxes. "
+            "Also shown here with BEAT/MISS badge relative to analyst expectations."
+        ),
+        "formula": "Net Margin = Net Income ÷ Total Revenue × 100%",
+        "good": (
+            "> 20% excellent · 10–20% strong · 5–10% adequate · 0–5% thin. "
+            "Negative = currently loss-making"
+        ),
+        "warn": (
+            "One-time items (asset sales, tax credits, restructuring charges) can "
+            "make a single year's net margin misleading. Look at the 3–5 year trend."
+        ),
+        "source": "Yahoo Finance · Investopedia — Net Profit Margin",
     },
+
     "roe": {
         "name": "Return on Equity (ROE)",
-        "definition": "How much profit the company generates for each dollar of shareholders' equity. Warren Buffett's preferred metric for quality businesses.",
-        "formula": "ROE = Net Income ÷ Shareholders' Equity × 100",
-        "good": "> 20% excellent · 15–20% strong · 8–15% adequate · < 8% weak",
-        "warn": "Very high ROE can result from excessive debt (leverage), not operational excellence.",
-        "source": "Investopedia",
+        "definition": (
+            "Net income generated for each dollar of shareholders' equity. "
+            "One of Warren Buffett's core metrics for identifying quality businesses — "
+            "a consistently high ROE over 10+ years indicates durable competitive advantage."
+        ),
+        "formula": "ROE = Net Income ÷ Average Shareholders' Equity × 100%",
+        "good": (
+            "> 20% excellent (Buffett threshold) "
+            "· 15–20% strong · 8–15% adequate · < 8% weak"
+        ),
+        "warn": (
+            "ROE can be artificially inflated by high debt (leverage) or share buybacks "
+            "that reduce equity. Always check alongside Debt/Equity ratio."
+        ),
+        "source": "Investopedia — Return on Equity",
     },
+
     "roa": {
         "name": "Return on Assets (ROA)",
-        "definition": "Net income as a percentage of total assets. Measures how efficiently management uses assets to generate profit.",
-        "formula": "ROA = Net Income ÷ Total Assets × 100",
-        "good": "> 10% excellent · 5–10% good · < 2% low (typical for banks)",
-        "warn": "Capital-intensive industries (utilities, mining) typically have low ROA.",
-        "source": "Investopedia",
+        "definition": (
+            "Net income as a percentage of total assets. Measures how efficiently "
+            "management converts the asset base into profit. Less susceptible to "
+            "leverage distortion than ROE."
+        ),
+        "formula": "ROA = Net Income ÷ Average Total Assets × 100%",
+        "good": (
+            "> 10% excellent · 5–10% good · 2–5% average "
+            "· < 2% typical for asset-heavy industries (banks, utilities, real estate)"
+        ),
+        "warn": (
+            "Capital-intensive businesses (airlines, manufacturers, miners) will always "
+            "have lower ROA than asset-light ones (software, consulting). "
+            "Compare within the same sector."
+        ),
+        "source": "Investopedia — Return on Assets",
     },
 
-    # ── Growth ────────────────────────────────────────────────────────────────
+    # ── GROWTH ───────────────────────────────────────────────────────────────
+
     "revenue_growth": {
-        "name": "Revenue Growth (YoY)",
-        "definition": "Year-over-year percentage increase in total revenue. The top-line growth driver for most valuation models.",
-        "formula": "Rev Growth = (Current Revenue − Prior Revenue) ÷ Prior Revenue × 100",
-        "good": "> 20% high growth · 8–20% solid · 0–8% slow · < 0% declining",
-        "warn": "Acquisitions can inflate reported growth — check organic growth separately.",
-        "source": "Yahoo Finance",
-    },
-    "earnings_growth": {
-        "name": "Earnings Growth (YoY)",
-        "definition": "Year-over-year percentage increase in net income or EPS. Sustained earnings growth is the primary long-term driver of share price appreciation.",
-        "formula": "EPS Growth = (EPS Current − EPS Prior) ÷ |EPS Prior| × 100",
-        "good": "> 20% high growth · 10–20% solid · 0–10% slow",
-        "warn": "Earnings can be manipulated through buybacks or accounting choices.",
-        "source": "Yahoo Finance",
+        "name": "Revenue Growth (Year-over-Year)",
+        "definition": (
+            "Percentage change in total revenue compared to the same period a year ago. "
+            "Top-line growth is the starting point for all financial projections — "
+            "you cannot grow earnings long-term without growing revenue."
+        ),
+        "formula": "Revenue Growth = (Revenue This Year − Revenue Last Year) ÷ Revenue Last Year × 100%",
+        "good": (
+            "> 20% high-growth · 10–20% solid · 5–10% moderate "
+            "· 0–5% slow · < 0% declining"
+        ),
+        "warn": (
+            "Acquisitions inflate reported growth — check organic growth. "
+            "Currency fluctuations can also distort reported growth for multinationals."
+        ),
+        "source": "Yahoo Finance · Investopedia — Revenue Growth",
     },
 
-    # ── Financial Health ──────────────────────────────────────────────────────
-    "debt_equity": {
-        "name": "Debt / Equity Ratio",
-        "definition": "Total debt as a multiple of shareholders' equity. Measures financial leverage and solvency risk.",
-        "formula": "D/E = Total Debt ÷ Shareholders' Equity",
-        "good": "< 0.5× conservative · 0.5–1.5× moderate · > 2× highly leveraged",
-        "warn": "High D/E during rising interest rates significantly increases financial risk.",
-        "source": "Yahoo Finance · Investopedia",
+    "earnings_growth": {
+        "name": "Earnings Per Share Growth (YoY)",
+        "definition": (
+            "Year-over-year percentage change in earnings per share. "
+            "Sustained EPS growth — driven by revenue growth and/or margin expansion — "
+            "is the primary long-term driver of share price appreciation."
+        ),
+        "formula": "EPS Growth = (EPS This Year − EPS Last Year) ÷ |EPS Last Year| × 100%",
+        "good": "> 20% high growth · 10–20% solid · 0–10% slow · < 0% declining",
+        "warn": (
+            "EPS can be boosted by share buybacks without any improvement in the underlying business. "
+            "Check revenue growth alongside earnings growth for a full picture."
+        ),
+        "source": "Yahoo Finance · Investopedia — EPS Growth",
     },
+
+    # ── FINANCIAL HEALTH ─────────────────────────────────────────────────────
+
+    "debt_equity": {
+        "name": "Debt / Equity Ratio (D/E)",
+        "definition": (
+            "Total interest-bearing debt divided by shareholders' equity. "
+            "Measures financial leverage — how much of the company is funded by debt "
+            "versus equity. Higher leverage amplifies both gains and losses."
+        ),
+        "formula": (
+            "D/E = Total Debt ÷ Total Shareholders' Equity\n"
+            "Note: Yahoo Finance reports this as a percentage (e.g. 120 = 1.2×) — "
+            "this tool converts it to a ratio automatically."
+        ),
+        "good": (
+            "< 0.5× conservative / financially strong "
+            "· 0.5–1.5× moderate leverage "
+            "· 1.5–3× elevated — monitor interest coverage "
+            "· > 3× highly leveraged"
+        ),
+        "warn": (
+            "Some industries (banks, utilities, real estate) routinely carry high D/E "
+            "as part of their business model. A bank at 8× D/E is not comparable to "
+            "an industrial company at the same ratio."
+        ),
+        "source": "Yahoo Finance · Investopedia — Debt-to-Equity Ratio",
+    },
+
     "current_ratio": {
         "name": "Current Ratio",
-        "definition": "Ability to pay short-term obligations using current assets. A basic test of short-term liquidity.",
+        "definition": (
+            "Current assets divided by current liabilities. Measures the company's "
+            "ability to pay all short-term obligations (due within 12 months) "
+            "using assets that can be converted to cash within 12 months."
+        ),
         "formula": "Current Ratio = Current Assets ÷ Current Liabilities",
-        "good": "> 2× strong · 1.5–2× good · 1–1.5× adequate · < 1 = potential shortfall",
-        "warn": "Very high current ratio may indicate idle cash or poor working capital management.",
-        "source": "Investopedia",
+        "good": (
+            "> 2.0× strong liquidity buffer "
+            "· 1.5–2.0× healthy "
+            "· 1.0–1.5× adequate but watch closely "
+            "· < 1.0× current liabilities exceed current assets — liquidity risk"
+        ),
+        "warn": (
+            "A very high current ratio (> 4×) may indicate the company holds too much "
+            "idle cash or has slow-moving inventory — not always positive. "
+            "Retailers and subscription businesses can operate well below 1.0."
+        ),
+        "source": "Investopedia — Current Ratio",
     },
+
     "beta": {
-        "name": "Beta (Market Sensitivity)",
-        "definition": "Measures a stock's price volatility relative to the overall market (S&P 500 = 1.0). Used to calculate required rate of return in CAPM.",
-        "formula": "β = Cov(Stock, Market) ÷ Var(Market) — calculated over 5 years monthly",
-        "good": "< 0.8 defensive · 0.8–1.2 market-like · > 1.5 high-volatility",
-        "warn": "Beta is backward-looking and may not predict future volatility.",
-        "source": "Yahoo Finance",
+        "name": "Beta (Systematic Risk / Market Sensitivity)",
+        "definition": (
+            "Measures how much a stock moves relative to the broader market (S&P 500 = 1.0). "
+            "A beta of 1.5 means the stock tends to move 50% more than the market "
+            "in both directions. Also used here as a label for 52-week high/low data "
+            "in the sentiment section."
+        ),
+        "formula": (
+            "β = Covariance(Stock Returns, Market Returns) ÷ Variance(Market Returns)\n"
+            "Calculated using monthly returns over the past 5 years vs S&P 500"
+        ),
+        "good": (
+            "< 0.7 defensive / low volatility "
+            "· 0.7–1.2 roughly market-like "
+            "· 1.2–1.8 growth / cyclical "
+            "· > 2.0 highly volatile"
+        ),
+        "warn": (
+            "Beta is backward-looking — a stock's historical volatility may not "
+            "predict future behaviour. New companies or those undergoing transformation "
+            "may have unreliable beta readings."
+        ),
+        "source": "Yahoo Finance · Investopedia — Beta",
     },
+
     "dividend_yield": {
         "name": "Dividend Yield",
-        "definition": "Annual dividend payment as a percentage of current share price. Important for income investors.",
-        "formula": "Dividend Yield = Annual DPS ÷ Current Stock Price × 100",
-        "good": "2–4% sustainable income · > 6% may be unsustainable (check payout ratio)",
-        "warn": "A very high yield often signals dividend risk — verify the payout ratio.",
-        "source": "Yahoo Finance · Investopedia",
+        "definition": (
+            "Annual dividends paid per share as a percentage of the current share price. "
+            "Represents the income return on investment from dividends alone, "
+            "before any capital gains or losses."
+        ),
+        "formula": "Dividend Yield = Annual Dividend per Share ÷ Current Share Price × 100%",
+        "good": (
+            "1–2% low but growing (reinvestment focus) "
+            "· 2–4% solid income yield "
+            "· 4–6% high yield — check payout ratio for sustainability "
+            "· > 6% potentially unsustainable — verify with free cash flow"
+        ),
+        "warn": (
+            "A high yield can be a warning sign if caused by a falling share price. "
+            "Always check the payout ratio (dividends ÷ earnings) — above 80% raises "
+            "questions about long-term sustainability."
+        ),
+        "source": "Yahoo Finance · Investopedia — Dividend Yield",
     },
 
-    # ── DCF Model Specific ────────────────────────────────────────────────────
+    # ── DCF MODEL SPECIFIC ────────────────────────────────────────────────────
+
     "wacc": {
         "name": "WACC — Weighted Average Cost of Capital",
-        "definition": "The blended required return on capital from both equity and debt investors, weighted by capital structure. Used as the discount rate in enterprise DCF models.",
-        "formula": "WACC = (E/V × Ke) + (D/V × Kd × (1−tax))\nKe = Rfr + β × MRP · Kd = Interest/Debt",
-        "good": "Typically 7–12% for large caps · higher for small/risky firms",
-        "warn": "WACC is highly sensitive to beta and capital structure assumptions.",
-        "source": "Investopedia · CFA Institute",
+        "definition": (
+            "The minimum return a company must earn on its total invested capital "
+            "to satisfy all its investors — both equity holders and debt holders. "
+            "Used as the discount rate in enterprise DCF models. "
+            "A lower WACC produces a higher intrinsic value."
+        ),
+        "formula": (
+            "WACC = (E/V × Ke) + (D/V × Kd × (1 − Tax Rate))\n"
+            "E = Market Cap  ·  D = Total Debt  ·  V = E + D\n"
+            "Ke = Cost of Equity (CAPM)  ·  Kd = Pre-tax Cost of Debt"
+        ),
+        "good": (
+            "7–10% typical large-cap · 10–14% mid-cap / higher risk "
+            "· > 15% small-cap / emerging market"
+        ),
+        "warn": (
+            "WACC is sensitive to beta (which changes over time), the market risk premium "
+            "assumed (this tool uses 5.5%), and the cost of debt calculation. "
+            "A 1% change in WACC can move the intrinsic value by 15–25%."
+        ),
+        "source": "Investopedia — WACC · CFA Institute",
     },
+
     "capm": {
-        "name": "CAPM — Capital Asset Pricing Model",
-        "definition": "Model that determines the expected return on equity based on its systematic risk (beta). Used as the equity discount rate when ignoring debt.",
-        "formula": "Ke = Rfr + β × MRP\nMRP (market risk premium) = 5.5% (historical avg)",
-        "good": "Typically 8–15% for equities",
-        "warn": "CAPM assumes beta fully captures risk — may understate risk for small/illiquid stocks.",
-        "source": "Investopedia · CFA Institute",
+        "name": "CAPM — Capital Asset Pricing Model (Cost of Equity)",
+        "definition": (
+            "Model that calculates the expected return an equity investor requires, "
+            "based on the stock's systematic risk (beta). Used as the discount rate "
+            "in equity-only DCF models and as the cost of equity component in WACC. "
+            "Also used here to display the Risk-Free Rate."
+        ),
+        "formula": (
+            "Ke = Risk-Free Rate + β × Market Risk Premium\n"
+            "Risk-Free Rate = US 10Y Treasury yield (fetched live)\n"
+            "Market Risk Premium = 5.5% (long-run historical average)"
+        ),
+        "good": (
+            "With Rfr = 4.5% and β = 1.0: Ke = 4.5% + 1.0 × 5.5% = 10.0%\n"
+            "Higher beta → higher required return → lower intrinsic value"
+        ),
+        "warn": (
+            "CAPM is a single-factor model — it only captures market risk (beta), "
+            "not size, value, or liquidity factors. It may understate the required "
+            "return for small or illiquid companies."
+        ),
+        "source": "Investopedia — CAPM · CFA Institute",
     },
+
     "fcf": {
         "name": "Free Cash Flow (FCF)",
-        "definition": "Cash generated by operations after capital expenditures. The actual cash available to pay debt, dividends, buybacks, or reinvest in growth.",
-        "formula": "FCF = Operating Cash Flow − Capital Expenditures",
-        "good": "Positive FCF = self-funding business · FCF yield > 5% = attractive",
-        "warn": "Negative FCF is normal for early-stage or heavily investing companies.",
-        "source": "Yahoo Finance · Investopedia",
-    },
-    "terminal_value": {
-        "name": "Terminal Value (DCF)",
-        "definition": "The present value of all cash flows beyond the explicit forecast period, assuming constant perpetual growth. Typically the largest component of a DCF.",
-        "formula": "TV = FCF_n × (1+g) ÷ (r−g)\ng = terminal growth rate (~2.5%) · r = discount rate",
-        "good": "TV/EV ratio < 75% is considered conservative",
-        "warn": "Very sensitive to terminal growth rate — small changes have large impact.",
-        "source": "Investopedia · Damodaran",
+        "definition": (
+            "Cash generated from the company's core operations after spending on "
+            "capital expenditures (maintenance and growth of physical assets). "
+            "FCF is the cash actually available to return to shareholders via "
+            "dividends and buybacks, or to pay down debt."
+        ),
+        "formula": (
+            "FCF = Operating Cash Flow − Capital Expenditures\n"
+            "FCF Yield = FCF ÷ Market Capitalisation × 100%"
+        ),
+        "good": (
+            "Positive FCF = company funds itself without external capital "
+            "· FCF Yield > 5% = strong cash return potential "
+            "· FCF > Net Income = high earnings quality"
+        ),
+        "warn": (
+            "Negative FCF is normal and even desirable for fast-growing companies "
+            "investing heavily in their future. Context matters: "
+            "a startup at −FCF is very different from a mature company."
+        ),
+        "source": "Yahoo Finance · Investopedia — Free Cash Flow",
     },
 
-    # ── Technical ─────────────────────────────────────────────────────────────
-    "rsi": {
-        "name": "RSI — Relative Strength Index",
-        "definition": "Momentum oscillator measuring the speed and magnitude of price changes on a 0–100 scale. Developed by J. Welles Wilder in 1978.",
-        "formula": "RSI = 100 − 100/(1 + RS)\nRS = Avg Gain (14d) ÷ Avg Loss (14d)",
-        "good": "> 70 overbought (potential pullback) · < 30 oversold (potential bounce)",
-        "warn": "In strong trends, RSI can stay overbought/oversold for extended periods.",
-        "source": "Investopedia",
+    "terminal_value": {
+        "name": "Terminal Value (Gordon Growth Model)",
+        "definition": (
+            "The estimated value of all cash flows beyond the explicit forecast period "
+            "(typically years 6–10 onward), assuming the business grows at a constant "
+            "perpetual rate forever. Usually the single largest component of a DCF valuation."
+        ),
+        "formula": (
+            "Terminal Value = FCF_final × (1 + g) ÷ (r − g)\n"
+            "g = perpetual growth rate (this tool uses 2.5% ≈ long-run nominal GDP)\n"
+            "r = discount rate (WACC or CAPM)"
+        ),
+        "good": (
+            "TV as % of Total EV < 65% = well-anchored valuation "
+            "· 65–80% = significant dependence on long-term assumptions "
+            "· > 80% = treat with extra caution"
+        ),
+        "warn": (
+            "The terminal value is extremely sensitive to the perpetual growth rate. "
+            "Changing g from 2.5% to 3.0% can increase intrinsic value by 10–20%. "
+            "Gordon Growth Model assumes r > g — if not, the formula breaks down."
+        ),
+        "source": "Investopedia — Terminal Value · Damodaran (NYU)",
     },
+
+    # ── TECHNICAL INDICATORS ─────────────────────────────────────────────────
+
+    "rsi": {
+        "name": "RSI — Relative Strength Index (14-period)",
+        "definition": (
+            "Momentum oscillator that measures the speed and magnitude of recent price "
+            "changes on a scale of 0 to 100. Developed by J. Welles Wilder Jr. in 1978. "
+            "Used to identify overbought and oversold conditions."
+        ),
+        "formula": (
+            "RS = Average Gain over 14 periods ÷ Average Loss over 14 periods\n"
+            "RSI = 100 − (100 ÷ (1 + RS))"
+        ),
+        "good": (
+            "< 30 → oversold (potential buying opportunity) "
+            "· 30–50 → bearish/weak momentum "
+            "· 50–70 → bullish/strong momentum "
+            "· > 70 → overbought (potential pullback)"
+        ),
+        "warn": (
+            "In a strong uptrend, RSI can stay above 70 for weeks or months — "
+            "overbought alone is not a sell signal. "
+            "Best used in combination with trend and support/resistance analysis."
+        ),
+        "source": "Investopedia — RSI Indicator",
+    },
+
     "macd": {
         "name": "MACD — Moving Average Convergence Divergence",
-        "definition": "Trend-following momentum indicator showing the relationship between two exponential moving averages. Used to identify trend changes and momentum.",
-        "formula": "MACD = EMA(12) − EMA(26)\nSignal Line = EMA(9) of MACD",
-        "good": "MACD above signal = bullish · below = bearish · histogram increasing = momentum",
-        "warn": "MACD can give false signals in choppy/sideways markets.",
-        "source": "Investopedia",
-    },
-    "bollinger": {
-        "name": "Bollinger Bands",
-        "definition": "Volatility bands placed above and below a 20-day simple moving average. Prices outside the bands are statistically unusual and may revert.",
-        "formula": "Upper/Lower = SMA(20) ± 2 × StdDev(20)\n%B = (Price − Lower) ÷ (Upper − Lower)",
-        "good": "%B > 1 overbought · %B < 0 oversold · Squeeze = low vol before breakout",
-        "warn": "Bollinger Bands don't predict direction — only volatility levels.",
-        "source": "Investopedia",
-    },
-    "obv": {
-        "name": "OBV — On-Balance Volume",
-        "definition": "Cumulative volume indicator that adds volume on up days and subtracts on down days. Used to detect institutional buying/selling before price moves.",
-        "formula": "OBV_n = OBV_(n-1) + Volume (if close > prior) or − Volume (if close < prior)",
-        "good": "Rising OBV + rising price = strong trend · Rising OBV + falling price = bullish divergence",
-        "warn": "Large single-day volume events can skew the signal.",
-        "source": "Investopedia",
-    },
-    "sma": {
-        "name": "SMA / EMA — Moving Averages",
-        "definition": "SMA = simple (equal weights). EMA = exponential (more weight on recent prices). Used to identify trend direction and dynamic support/resistance.",
-        "formula": "SMA(n) = Sum(Close, n) ÷ n\nGolden Cross = SMA50 > SMA200 (bullish)\nDeath Cross = SMA50 < SMA200 (bearish)",
-        "good": "Price > 200-SMA = long-term uptrend · Golden Cross historically bullish",
-        "warn": "Moving averages are lagging indicators — they confirm trends, not predict them.",
-        "source": "Investopedia",
+        "definition": (
+            "Trend-following momentum indicator that shows the relationship between "
+            "two exponential moving averages (EMA). The MACD line crossing above the "
+            "signal line is a bullish signal; crossing below is bearish."
+        ),
+        "formula": (
+            "MACD Line = EMA(12 periods) − EMA(26 periods)\n"
+            "Signal Line = EMA(9 periods) of MACD Line\n"
+            "Histogram = MACD Line − Signal Line"
+        ),
+        "good": (
+            "MACD above Signal Line = bullish momentum "
+            "· MACD above zero = positive territory "
+            "· Rising histogram = momentum building"
+        ),
+        "warn": (
+            "MACD is a lagging indicator — signals come after a trend starts. "
+            "It can produce many false signals in choppy, sideways markets. "
+            "More reliable on daily/weekly charts than intraday."
+        ),
+        "source": "Investopedia — MACD Indicator",
     },
 
-    # ── Sentiment ─────────────────────────────────────────────────────────────
-    "earnings_surprise": {
-        "name": "Earnings Surprise",
-        "definition": "The percentage by which actual reported EPS differs from the consensus analyst estimate. Positive surprises typically cause short-term price jumps.",
-        "formula": "Surprise % = (Actual EPS − Estimated EPS) ÷ |Estimated EPS| × 100",
-        "good": "Consistent beats (>0%) with large surprises (>5%) signal strong execution",
-        "warn": "Companies sometimes 'guide down' to make beats easier — check estimate revision trend.",
-        "source": "Yahoo Finance · Investopedia",
+    "bollinger": {
+        "name": "Bollinger Bands (20-period, 2 standard deviations)",
+        "definition": (
+            "Volatility envelope around a 20-day simple moving average. "
+            "The bands widen during high volatility and contract during low volatility. "
+            "Developed by John Bollinger in the 1980s."
+        ),
+        "formula": (
+            "Middle Band = SMA(20)\n"
+            "Upper Band = SMA(20) + 2 × Standard Deviation(20)\n"
+            "Lower Band = SMA(20) − 2 × Standard Deviation(20)\n"
+            "%B = (Price − Lower Band) ÷ (Upper − Lower Band)"
+        ),
+        "good": (
+            "%B > 1.0 → price above upper band (overbought caution) "
+            "· %B < 0.0 → price below lower band (oversold / bounce potential) "
+            "· Squeeze (narrow bands) → low volatility often precedes a breakout"
+        ),
+        "warn": (
+            "Bollinger Bands indicate volatility level but do NOT predict direction. "
+            "A price touching the upper band in an uptrend can be a sign of strength, "
+            "not necessarily a reversal."
+        ),
+        "source": "Investopedia — Bollinger Bands",
     },
+
+    "obv": {
+        "name": "OBV — On-Balance Volume",
+        "definition": (
+            "Running total that adds volume on days the price closes up and "
+            "subtracts volume on days the price closes down. Based on the theory "
+            "that volume precedes price — institutional accumulation shows up in "
+            "OBV before it appears in the price."
+        ),
+        "formula": (
+            "If Close > Prior Close: OBV = OBV_prior + Volume\n"
+            "If Close < Prior Close: OBV = OBV_prior − Volume\n"
+            "If Close = Prior Close: OBV = OBV_prior"
+        ),
+        "good": (
+            "OBV trending up with price → confirmed uptrend (strong) "
+            "· OBV rising while price falls → bullish divergence (potential reversal up) "
+            "· OBV falling while price rises → bearish divergence (distribution warning)"
+        ),
+        "warn": (
+            "OBV is most useful for detecting divergences from price. "
+            "A single large-volume day (earnings, index addition) can distort the indicator "
+            "for weeks. The absolute level of OBV is less important than its trend."
+        ),
+        "source": "Investopedia — On-Balance Volume",
+    },
+
+    "sma": {
+        "name": "Moving Averages — SMA and EMA",
+        "definition": (
+            "SMA (Simple Moving Average): equal-weight average of closing prices over N periods. "
+            "EMA (Exponential Moving Average): gives more weight to recent prices, "
+            "reacts faster to price changes. "
+            "Used to identify trend direction and dynamic support/resistance levels."
+        ),
+        "formula": (
+            "SMA(N) = Sum of closing prices over N periods ÷ N\n"
+            "EMA applies a multiplier: k = 2 ÷ (N + 1) to weight recent prices more\n"
+            "Golden Cross: SMA50 crosses above SMA200 → bullish trend signal\n"
+            "Death Cross:  SMA50 crosses below SMA200 → bearish trend signal"
+        ),
+        "good": (
+            "Price > 200-SMA = long-term uptrend (bullish regime) "
+            "· Price > 50-SMA = medium-term bullish "
+            "· Golden Cross = historically strong bullish signal"
+        ),
+        "warn": (
+            "Moving averages are lagging — they confirm trends after they start, "
+            "not predict them. In sideways markets they generate many false crossover signals."
+        ),
+        "source": "Investopedia — Simple Moving Average · EMA",
+    },
+
+    # ── SENTIMENT & ANALYST DATA ──────────────────────────────────────────────
+
     "analyst_consensus": {
         "name": "Analyst Consensus Rating",
-        "definition": "Average recommendation from covering analysts on a 1–5 scale (1=Strong Buy, 5=Strong Sell). Yahoo Finance aggregates ratings from major brokerages.",
-        "formula": "Mean Score = Sum(ratings) ÷ Number of Analysts\n1.0–1.5 Strong Buy · 2.0–2.5 Buy · 3.0 Hold · 4.0+ Sell",
-        "good": "≤ 2.0 broadly bullish · ≥ 4.0 broadly bearish",
-        "warn": "Analyst ratings have conflicts of interest (investment banking relationships).",
-        "source": "Yahoo Finance",
+        "definition": (
+            "Average recommendation from all analysts covering the stock, "
+            "on Yahoo Finance's 1–5 scale. Aggregated from ratings published "
+            "by investment banks and independent research firms. "
+            "Also used here to display analyst price target data."
+        ),
+        "formula": (
+            "Mean Rating = Sum of all analyst ratings ÷ Number of analysts\n"
+            "Scale: 1.0 = Strong Buy · 2.0 = Buy · 3.0 = Hold "
+            "· 4.0 = Sell · 5.0 = Strong Sell"
+        ),
+        "good": (
+            "≤ 1.8 strong bullish consensus "
+            "· 1.8–2.5 broadly bullish "
+            "· 2.5–3.5 mixed / hold "
+            "· ≥ 3.5 broadly bearish"
+        ),
+        "warn": (
+            "Analyst ratings are subject to conflicts of interest — "
+            "banks that underwrite deals for a company may be reluctant to issue sell ratings. "
+            "The direction of estimate revisions is often more informative than the absolute rating."
+        ),
+        "source": "Yahoo Finance — Analyst Recommendations",
     },
+
+    "earnings_surprise": {
+        "name": "Earnings Surprise",
+        "definition": (
+            "The percentage difference between actual reported EPS and "
+            "the consensus analyst estimate at the time of reporting. "
+            "Positive surprises (beats) tend to cause short-term price increases; "
+            "negative surprises (misses) often cause sharp drops."
+        ),
+        "formula": (
+            "Surprise % = (Actual EPS − Estimated EPS) ÷ |Estimated EPS| × 100%\n"
+            "Positive = beat consensus · Negative = missed consensus"
+        ),
+        "good": (
+            "Consistent beats over 6–8 quarters signal strong execution and "
+            "conservative guidance. Average surprise > 5% is excellent."
+        ),
+        "warn": (
+            "Companies sometimes guide analyst estimates down before the quarter ends "
+            "to make a beat easier ('sandbagging'). "
+            "Check if estimates were revised down in the weeks before the report."
+        ),
+        "source": "Yahoo Finance · Investopedia — Earnings Surprise",
+    },
+
     "short_interest": {
-        "name": "Short Interest / Short Ratio",
-        "definition": "Percentage of float sold short (Short % Float) and days-to-cover (Short Ratio). High short interest can signal bearish sentiment OR potential for a short squeeze.",
-        "formula": "Short % Float = Shares Short ÷ Float\nShort Ratio = Shares Short ÷ Avg Daily Volume",
-        "good": "< 5% normal · 5–15% elevated · > 20% high short interest",
-        "warn": "High short interest alone doesn't mean sell — short squeezes can cause rapid price rises.",
-        "source": "Yahoo Finance · Investopedia",
+        "name": "Short Interest & Short Ratio",
+        "definition": (
+            "Short % of Float: the percentage of tradeable shares currently sold short "
+            "(borrowed and sold, betting on a price decline). "
+            "Short Ratio (Days to Cover): how many average trading days it would take "
+            "all short sellers to buy back their positions."
+        ),
+        "formula": (
+            "Short % of Float = Shares Sold Short ÷ Float (tradeable shares) × 100%\n"
+            "Short Ratio = Shares Sold Short ÷ Average Daily Trading Volume"
+        ),
+        "good": (
+            "< 3% normal · 3–8% slightly elevated "
+            "· 8–20% high short interest (bearish sentiment) "
+            "· > 20% very high — also potential short squeeze fuel"
+        ),
+        "warn": (
+            "High short interest is ambiguous: it signals bearish sentiment "
+            "but also means there is a large pool of buyers who must cover if the "
+            "price rises (short squeeze potential). "
+            "GameStop (2021) is the classic example."
+        ),
+        "source": "Yahoo Finance · Investopedia — Short Interest",
     },
 }
 
@@ -375,35 +795,34 @@ def tooltip_html(metric_key: str, label: str, value: str,
     """
     Render a metric row with an inline hover tooltip.
 
-    forecast_status: 'beat' | 'miss' | 'inline' | '' (no badge)
-    position: '' | 'left' | 'up'  (tooltip placement)
+    forecast_status: 'beat' | 'miss' | 'inline' | ''
+    position: '' | 'left' | 'up'
     """
     m = METRICS.get(metric_key, {})
     if not m:
-        # No definition available — render plain row
         return f"""
         <div class='mrow'>
           <span class='mrow-label'>{label}</span>
           <span class='mrow-val'>{value}</span>
         </div>"""
 
-    box_class = f"tt-box{' tt-'+position if position else ''}"
-    name    = m.get("name", label)
-    defn    = m.get("definition", "")
-    formula = m.get("formula", "")
-    good    = m.get("good", "")
-    warn    = m.get("warn", "")
-    src     = m.get("source", "")
+    box_class  = f"tt-box{' tt-' + position if position else ''}"
+    name       = m.get("name", label)
+    defn       = m.get("definition", "")
+    formula    = m.get("formula", "")
+    good       = m.get("good", "")
+    warn       = m.get("warn", "")
+    src        = m.get("source", "")
 
-    formula_html = f"<div class='tt-formula'>{formula.replace(chr(10), '<br>')}</div>" if formula else ""
-    good_html    = f"<div class='tt-range'>✅ {good}</div>" if good else ""
-    warn_html    = f"<div class='tt-warn'>⚠️ {warn}</div>" if warn else ""
-    src_html     = f"<div class='tt-src'>Source: {src}</div>" if src else ""
+    formula_html = (f"<div class='tt-formula'>{formula.replace(chr(10), '<br>')}</div>"
+                    if formula else "")
+    good_html    = f"<div class='tt-range'>✅ {good}</div>"    if good   else ""
+    warn_html    = f"<div class='tt-warn'>⚠️ {warn}</div>"    if warn   else ""
+    src_html     = f"<div class='tt-src'>Source: {src}</div>" if src    else ""
 
-    # Forecast badge
     badge_map = {
-        "beat":   ("<span class='fc-badge fc-beat'>BEAT</span>",   "mrow-beat"),
-        "miss":   ("<span class='fc-badge fc-miss'>MISS</span>",   "mrow-miss"),
+        "beat":   ("<span class='fc-badge fc-beat'>BEAT</span>",      "mrow-beat"),
+        "miss":   ("<span class='fc-badge fc-miss'>MISS</span>",      "mrow-miss"),
         "inline": ("<span class='fc-badge fc-inline'>IN LINE</span>", "mrow-line"),
     }
     badge_html, val_class = badge_map.get(forecast_status, ("", "mrow-val"))
@@ -428,4 +847,5 @@ def tooltip_html(metric_key: str, label: str, value: str,
 
 
 def section_header(title: str) -> str:
-    return f"<div class='section-header' style='font-size:16px;font-weight:700;margin:14px 0 6px;color:#e2e8f0'>{title}</div>"
+    return (f"<div class='section-header' style='font-size:16px;font-weight:700;"
+            f"margin:14px 0 6px;color:#e2e8f0'>{title}</div>")
