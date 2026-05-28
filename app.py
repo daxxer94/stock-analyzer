@@ -99,12 +99,18 @@ st.markdown(TOOLTIP_CSS + """
 # ─── Helpers ─────────────────────────────────────────────────────────────────
 
 def fmt(v, pct=False, dec=2, prefix="", native_ccy="USD"):
-    if v is None or (isinstance(v, float) and (np.isnan(v) or np.isinf(v))):
+    """Safe formatter — coerces v to float, returns '—' on any bad value."""
+    if v is None:
+        return "—"
+    try:
+        v = float(v)
+    except (TypeError, ValueError):
+        return "—"
+    if np.isnan(v) or np.isinf(v):
         return "—"
     if pct:
         return f"{v:+.1%}" if abs(v) < 10 else f"{v:.1%}"
     if prefix == "$":
-        # Use display currency from session state if available
         disp_ccy = st.session_state.get("display_ccy_code", "USD")
         rates    = st.session_state.get("fx_rates", {})
         return fmt_currency(v, native_ccy, disp_ccy, rates)
@@ -1824,6 +1830,7 @@ def render_deploy_guide():
 
 def main():
     # ── Process pending ticker additions BEFORE any widgets render ────────────
+    # Handles: peer table "Analyze" button, and any other programmatic adds
     pending = st.session_state.pop("pending_add_ticker", None)
     if pending:
         slots = st.session_state.get("ticker_slots", ["","","","",""])
@@ -1832,15 +1839,24 @@ def main():
                 if not slots[si]:
                     slots[si] = pending
                     st.session_state["ticker_slots"] = slots
-                    st.session_state[f"t{si}"] = pending
                     break
-        # Flag to auto-run analysis on this render cycle
+        # Clear ALL widget keys so the seeding loop fills them fresh from ticker_slots
+        # This fixes the bug where stale t0-t4 keys prevent the new ticker from showing
+        for _ki in range(5):
+            st.session_state.pop(f"t{_ki}", None)
         st.session_state["auto_analyze"] = True
+        st.session_state["nav_page"]     = "analyzer"
 
     with st.sidebar:
         st.markdown("# 📈 Stock Analyzer")
 
         # ── Page navigation ───────────────────────────────────────────────────
+        # Resolve current page — force_nav takes priority over radio
+        # (used when screener sends a ticker to the analyzer)
+        if "force_nav" in st.session_state:
+            forced = st.session_state.pop("force_nav")
+            st.session_state["nav_page"] = forced
+
         nav_page = st.session_state.get("nav_page", "analyzer")
         nav_sel  = st.radio(
             "Navigation",
@@ -1850,10 +1866,11 @@ def main():
             key="nav_radio",
             label_visibility="collapsed",
         )
-        if "Screener" in nav_sel:
-            st.session_state["nav_page"] = "screener"
-        else:
-            st.session_state["nav_page"] = "analyzer"
+        # Only update nav_page from radio if no force was applied this cycle
+        new_nav_from_radio = "screener" if "Screener" in nav_sel else "analyzer"
+        if new_nav_from_radio != nav_page:
+            st.session_state["nav_page"] = new_nav_from_radio
+            nav_page = new_nav_from_radio
 
         st.markdown("---")
 
@@ -1898,13 +1915,17 @@ def main():
             st.session_state["ticker_slots"] = ["", "", "", "", ""]
         slots = st.session_state["ticker_slots"]
 
-        # Only seed widget keys that haven't been set yet (first load).
-        # After that, the text_input widgets own their own state via their keys.
-        # Programmatic adds (search button, peer button) set st.session_state[f"t{i}"]
-        # directly and call st.rerun(), which is the correct Streamlit pattern.
+        # Always sync ticker_slots → widget keys.
+        # Streamlit clears widget keys for widgets that didn't render on the last cycle
+        # (e.g. when navigating to screener and back). Force-sync every run so
+        # text_inputs always reflect the stored slots.
         for i in range(5):
-            if f"t{i}" not in st.session_state:
-                st.session_state[f"t{i}"] = slots[i]
+            stored = slots[i] if i < len(slots) else ""
+            # Only overwrite if the slot has a value and widget disagrees
+            # (don't overwrite user-typed values with empty)
+            current_widget = st.session_state.get(f"t{i}", "")
+            if stored and current_widget != stored:
+                st.session_state[f"t{i}"] = stored
 
         ticker_inputs = []
         new_slots = []
@@ -1920,14 +1941,19 @@ def main():
                     if disp_name:
                         st.caption(f"↳ {disp_name[:30]}")
             with col_x:
-                if slots[i] and st.button("✕", key=f"clear_{i}", help="Remove"):
+                # Show X only when slot actually has content
+                has_val = val.strip() != ""
+                if has_val and st.button("✕", key=f"clear_{i}", help="Remove"):
+                    st.session_state[f"t{i}"] = ""
                     slots[i] = ""
                     st.session_state["ticker_slots"] = slots
-                    st.session_state[f"t{i}"] = ""
                     st.rerun()
-            new_slots.append(val.strip().upper() if val.strip() else "")
-            if val.strip():
-                ticker_inputs.append(val.strip().upper())
+                elif not has_val:
+                    st.empty()   # keep column layout consistent
+            v = val.strip().upper()
+            new_slots.append(v)
+            if v:
+                ticker_inputs.append(v)
         st.session_state["ticker_slots"] = new_slots
 
         st.markdown("---")
