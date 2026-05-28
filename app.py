@@ -150,14 +150,17 @@ def build_current_price_chart(hist: pd.DataFrame, ticker: str, info: dict) -> go
         return go.Figure()
     close  = hist["Close"].astype(float)
     dates  = hist.index
-    color  = "#26a69a" if float(close.iloc[-1]) >= float(close.iloc[0]) else "#ef5350"
+    color     = "#26a69a" if float(close.iloc[-1]) >= float(close.iloc[0]) else "#ef5350"
+    # Convert hex to rgba properly
+    r = int(color[1:3], 16); g = int(color[3:5], 16); b = int(color[5:7], 16)
+    fill_color = f"rgba({r},{g},{b},0.08)"
     fig = go.Figure()
     fig.add_trace(go.Scatter(
         x=dates, y=close, name="Price",
         mode="lines",
         line=dict(color=color, width=2),
         fill="tozeroy",
-        fillcolor=color.replace("#", "rgba(").rstrip(")") + ",0.08)" if color.startswith("#") else color,
+        fillcolor=fill_color,
     ))
     cp   = float(close.iloc[-1])
     high = float(close.max())
