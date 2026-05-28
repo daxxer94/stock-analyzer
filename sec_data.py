@@ -17,6 +17,21 @@ import streamlit as st
 import yfinance as yf
 
 
+# ─── Simple TTL cache ─────────────────────────────────────────────────────────
+import time as _time
+_MOD_CACHE: dict = {}
+
+def _ttl(key, ttl_secs, fn):
+    now = _time.time()
+    if key in _MOD_CACHE:
+        val, ts = _MOD_CACHE[key]
+        if now - ts < ttl_secs:
+            return val
+    result = fn()
+    _MOD_CACHE[key] = (result, now)
+    return result
+
+
 # ─── Regulatory body URLs by country ─────────────────────────────────────────
 REGULATORY_LINKS = {
     "United States": {
@@ -102,8 +117,7 @@ REGULATORY_LINKS = {
 
 # ─── SEC EDGAR ────────────────────────────────────────────────────────────────
 
-@st.cache_data(ttl=86400, show_spinner=False)
-def fetch_sec_cik(ticker: str) -> str | None:
+def _fetch_sec_cik_impl(ticker: str) -> str | None:
     """Look up SEC CIK number for a US ticker via EDGAR company search."""
     try:
         url = f"https://efts.sec.gov/LATEST/search-index?q=%22{ticker}%22&forms=10-K"
@@ -134,8 +148,7 @@ def fetch_sec_cik(ticker: str) -> str | None:
     return None
 
 
-@st.cache_data(ttl=86400, show_spinner=False)
-def fetch_sec_filings(cik: str, form_type: str = "10-K", count: int = 5) -> list:
+def _fetch_sec_filings_impl(cik: str, form_type: str = "10-K", count: int = 5) -> list:
     """Fetch recent SEC filings for a CIK."""
     if not cik:
         return []
@@ -171,8 +184,7 @@ def fetch_sec_filings(cik: str, form_type: str = "10-K", count: int = 5) -> list
 
 # ─── News ─────────────────────────────────────────────────────────────────────
 
-@st.cache_data(ttl=1800, show_spinner=False)
-def fetch_news(ticker: str) -> list:
+def _fetch_news_impl(ticker: str) -> list:
     """Fetch recent news articles from Yahoo Finance via yfinance."""
     try:
         news = yf.Ticker(ticker).get_news(count=15) or []
@@ -448,6 +460,22 @@ def generate_swot(info: dict, scoring: dict, signals: dict,
         "opportunities": opportunities[:5],
         "threats":       threats[:5],
     }
+
+
+def fetch_sec_cik(ticker: str):
+    """Cached 24h."""
+    return _ttl(f"sec_cik:{ticker}", 86400, lambda: _fetch_sec_cik_impl(ticker))
+
+
+def fetch_sec_filings(cik: str, form_type: str = "10-K", count: int = 5) -> list:
+    """Cached 24h."""
+    return _ttl(f"sec_filings:{cik}:{form_type}:{count}", 86400,
+                lambda: _fetch_sec_filings_impl(cik, form_type, count))
+
+
+def fetch_news(ticker: str) -> list:
+    """Cached 30 min."""
+    return _ttl(f"news:{ticker}", 1800, lambda: _fetch_news_impl(ticker))
 
 
 def get_regulatory_info(country: str, company_name: str) -> dict:

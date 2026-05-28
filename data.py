@@ -1,14 +1,30 @@
 """
 data.py - Data fetching from Yahoo Finance via yfinance.
 Includes retry logic with exponential backoff to handle rate limiting.
-All functions are cached with st.cache_data to avoid redundant API calls.
+Uses a simple TTL dict cache instead of st.cache_data to avoid
+CacheReplayClosureError in Streamlit 1.57+.
 """
 import yfinance as yf
 import pandas as pd
 import numpy as np
-import streamlit as st
 import time
 import random
+import functools
+import streamlit as st   # only used for @st.cache_data on peer metrics
+
+# ─── Simple TTL cache (replaces st.cache_data for data fetching functions) ────
+_CACHE: dict = {}
+
+def _ttl_cache(key: str, ttl: int, fn):
+    """Fetch from cache if fresh, else call fn() and store result."""
+    now = time.time()
+    if key in _CACHE:
+        val, ts = _CACHE[key]
+        if now - ts < ttl:
+            return val
+    result = fn()
+    _CACHE[key] = (result, now)
+    return result
 
 
 # ─── Retry helper ─────────────────────────────────────────────────────────────
@@ -53,8 +69,7 @@ def _safe_get_retry(stock, attr, ticker=""):
 
 # ─── Main ticker fetch ────────────────────────────────────────────────────────
 
-@st.cache_data(ttl=3600, show_spinner=False)
-def fetch_ticker_data(ticker: str) -> dict:
+def _fetch_ticker_data_impl(ticker: str) -> dict:
     """Fetch all relevant data for a single ticker, with rate-limit retries."""
     ticker = ticker.upper().strip()
     try:
@@ -168,8 +183,13 @@ def fetch_ticker_data(ticker: str) -> dict:
 
 # ─── Risk-free rate ───────────────────────────────────────────────────────────
 
-@st.cache_data(ttl=86400, show_spinner=False)
-def fetch_risk_free_rate() -> float:
+def fetch_ticker_data(ticker: str) -> dict:
+    """Public cached entry point for fetch_ticker_data."""
+    key = f"ticker:{ticker.upper().strip()}"
+    return _ttl_cache(key, 3600, lambda: _fetch_ticker_data_impl(ticker))
+
+
+def _fetch_risk_free_rate_impl() -> float:
     """Fetch 10-year US Treasury yield. Falls back to 4.5%."""
     try:
         hist = _retry(lambda: yf.Ticker("^TNX").history(period="5d"), label="^TNX")
@@ -180,8 +200,12 @@ def fetch_risk_free_rate() -> float:
     return 0.045
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
-def fetch_sp500() -> pd.DataFrame:
+def fetch_risk_free_rate() -> float:
+    """Cached: 10Y Treasury rate."""
+    return _ttl_cache("rfr", 86400, _fetch_risk_free_rate_impl)
+
+
+def _fetch_sp500_impl() -> pd.DataFrame:
     try:
         return _retry(lambda: yf.Ticker("^GSPC").history(period="2y"), label="^GSPC")
     except Exception:
@@ -190,7 +214,12 @@ def fetch_sp500() -> pd.DataFrame:
 
 # ─── Peer metrics ─────────────────────────────────────────────────────────────
 
-@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_sp500() -> pd.DataFrame:
+    """Cached: S&P 500 history."""
+    return _ttl_cache("sp500", 3600, _fetch_sp500_impl)
+
+
+@st.cache_data(ttl=3600)
 def fetch_peer_metrics(tickers_tuple: tuple) -> dict:
     """
     Fetch valuation metrics for peer list.

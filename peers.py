@@ -13,8 +13,22 @@ Strategy:
 """
 import time
 import yfinance as yf
-import streamlit as st
 from typing import List, Dict
+
+
+# ─── Simple TTL cache ─────────────────────────────────────────────────────────
+import time as _time
+_MOD_CACHE: dict = {}
+
+def _ttl(key, ttl_secs, fn):
+    now = _time.time()
+    if key in _MOD_CACHE:
+        val, ts = _MOD_CACHE[key]
+        if now - ts < ttl_secs:
+            return val
+    result = fn()
+    _MOD_CACHE[key] = (result, now)
+    return result
 
 
 # ─── Comprehensive International Peer Map ─────────────────────────────────────
@@ -588,9 +602,8 @@ SECTOR_PEERS: Dict[str, List[str]] = {
 
 # ─── Dynamic Peer Search via yfinance ─────────────────────────────────────────
 
-@st.cache_data(ttl=86400, show_spinner=False)
-def search_peers_yfinance(industry: str, sector: str, target: str) -> List[str]:
-    """Use yf.Search to dynamically discover peers. Cached 24h."""
+def _search_peers_yfinance_impl(industry: str, sector: str, target: str) -> List[str]:
+    """Use yf.Search to dynamically discover peers."""
     found = []
     try:
         # Build search queries to discover equity tickers in the same space
@@ -613,8 +626,7 @@ def search_peers_yfinance(industry: str, sector: str, target: str) -> List[str]:
     return list(dict.fromkeys(found))[:20]  # deduplicate
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
-def validate_peers(tickers_tuple: tuple, target_mktcap: float) -> List[str]:
+def _validate_peers_impl(tickers_tuple: tuple, target_mktcap: float) -> List[str]:
     """
     Filter a candidate list: must have valid price.
     Sort by market-cap proximity to target.
@@ -643,6 +655,18 @@ def validate_peers(tickers_tuple: tuple, target_mktcap: float) -> List[str]:
     ref = math.log(max(target_mktcap, 1e8))
     valid.sort(key=lambda x: abs(math.log(max(x[1], 1e8)) - ref))
     return [t for t, _ in valid[:10]]
+
+
+def search_peers_yfinance(industry: str, sector: str, target: str) -> List[str]:
+    """Cached 24h: dynamically discover peers."""
+    key = f"peers_search:{industry}:{sector}:{target}"
+    return _ttl(key, 86400, lambda: _search_peers_yfinance_impl(industry, sector, target))
+
+
+def validate_peers(tickers_tuple: tuple, target_mktcap: float) -> List[str]:
+    """Cached 1h: filter and rank peer candidates."""
+    key = f"peers_validate:{','.join(tickers_tuple)}:{int(target_mktcap/1e6)}"
+    return _ttl(key, 3600, lambda: _validate_peers_impl(tickers_tuple, target_mktcap))
 
 
 def get_auto_peers(ticker: str, info: dict) -> List[str]:

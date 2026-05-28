@@ -16,6 +16,21 @@ import urllib.request
 import json
 import time
 
+
+# ─── Simple TTL cache ─────────────────────────────────────────────────────────
+import time as _time
+_MOD_CACHE: dict = {}
+
+def _ttl(key, ttl_secs, fn):
+    now = _time.time()
+    if key in _MOD_CACHE:
+        val, ts = _MOD_CACHE[key]
+        if now - ts < ttl_secs:
+            return val
+    result = fn()
+    _MOD_CACHE[key] = (result, now)
+    return result
+
 # ─── Supported currencies ──────────────────────────────────────────────────
 CURRENCIES = {
     "USD": "🇺🇸 US Dollar",
@@ -54,8 +69,7 @@ CURRENCY_SYMBOLS = {
 }
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
-def fetch_fx_rates() -> dict:
+def _fetch_fx_rates_impl() -> dict:
     """
     Fetch all FX rates relative to USD.
     Returns dict: {currency_code: rate_vs_usd}
@@ -153,6 +167,11 @@ def fmt_currency(value, ccy: str, display_ccy: str, rates: dict,
 def get_ticker_currency(info: dict) -> str:
     """Get the native currency of a ticker from yfinance info."""
     return (info.get("currency") or "USD").upper()
+
+
+def fetch_fx_rates() -> dict:
+    """Cached FX rate fetch (1 hour TTL)."""
+    return _ttl("fx_rates", 3600, _fetch_fx_rates_impl)
 
 
 def sidebar_currency_selector() -> tuple[str, dict, float]:
