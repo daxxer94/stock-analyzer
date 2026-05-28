@@ -600,105 +600,47 @@ SECTOR_PEERS: Dict[str, List[str]] = {
 }
 
 
-# ─── Dynamic Peer Search via yfinance ─────────────────────────────────────────
-
-def _search_peers_yfinance_impl(industry: str, sector: str, target: str) -> List[str]:
-    """Use yf.Search to dynamically discover peers."""
-    found = []
-    try:
-        # Build search queries to discover equity tickers in the same space
-        queries = [
-            f"{industry} company stocks",
-            f"{sector} {industry} equities",
-        ]
-        for q in queries:
-            try:
-                result = yf.Search(q, max_results=15, news_count=0)
-                for quote in result.quotes:
-                    sym = quote.get("symbol", "")
-                    qt  = quote.get("quoteType", "")
-                    if sym and qt == "EQUITY" and sym != target.upper():
-                        found.append(sym)
-            except Exception:
-                pass
-    except Exception:
-        pass
-    return list(dict.fromkeys(found))[:20]  # deduplicate
-
-
-def _validate_peers_impl(tickers_tuple: tuple, target_mktcap: float) -> List[str]:
-    """
-    Filter a candidate list: must have valid price.
-    Sort by market-cap proximity to target.
-    Return up to 10.
-    Staggered requests to avoid rate limiting.
-    """
-    valid = []
-    for i, t in enumerate(tickers_tuple):
-        # Stagger: 0.5s between each, longer pause every 5
-        time.sleep(1.0 if (i > 0 and i % 5 == 0) else 0.5)
-        try:
-            info  = yf.Ticker(t).info
-            price = info.get("currentPrice") or info.get("regularMarketPrice") or info.get("previousClose")
-            if not price or float(price) == 0:
-                continue
-            mktcap = info.get("marketCap") or 0
-            valid.append((t, mktcap))
-        except Exception:
-            pass
-
-    if not valid:
-        return []
-
-    # Sort by closeness to target's market cap (log scale)
-    import math
-    ref = math.log(max(target_mktcap, 1e8))
-    valid.sort(key=lambda x: abs(math.log(max(x[1], 1e8)) - ref))
-    return [t for t, _ in valid[:10]]
-
-
-def search_peers_yfinance(industry: str, sector: str, target: str) -> List[str]:
-    """Cached 24h: dynamically discover peers."""
-    key = f"peers_search:{industry}:{sector}:{target}"
-    return _ttl(key, 86400, lambda: _search_peers_yfinance_impl(industry, sector, target))
-
-
-def validate_peers(tickers_tuple: tuple, target_mktcap: float) -> List[str]:
-    """Cached 1h: filter and rank peer candidates."""
-    key = f"peers_validate:{','.join(tickers_tuple)}:{int(target_mktcap/1e6)}"
-    return _ttl(key, 3600, lambda: _validate_peers_impl(tickers_tuple, target_mktcap))
-
+# ─── Peer selection — no network validation ──────────────────────────────────
+#
+# The old approach fetched yf.Ticker(t).info for every candidate to validate
+# and rank by market cap — this caused 30+ API calls = 2–4 minutes of waiting.
+#
+# New approach: use ONLY the hardcoded curated lists (already high quality),
+# skip all network calls for peer selection, limit to 6 peers maximum.
+# The full metrics are fetched ONCE in fetch_peer_metrics().
 
 def get_auto_peers(ticker: str, info: dict) -> List[str]:
-    """Return auto-detected peers sorted by market-cap proximity."""
+    """
+    Return up to 6 peer tickers from the curated lists — zero network calls.
+    Matching priority: exact industry → partial industry → sector fallback.
+    """
     industry = info.get("industry", "")
     sector   = info.get("sector", "")
     t_upper  = ticker.upper()
-    mktcap   = float(info.get("marketCap") or 1e9)
 
-    # Step 1: hardcoded industry match (exact → partial)
-    candidates = []
+    candidates: List[str] = []
+
+    # 1. Exact industry match
     for key, peers in INDUSTRY_PEERS.items():
         if key.lower() == industry.lower():
             candidates = [p for p in peers if p != t_upper]
             break
+
+    # 2. Partial industry match (e.g. "Semiconductors" matches "Semiconductor Equipment")
     if not candidates:
         for key, peers in INDUSTRY_PEERS.items():
             key_words = set(key.lower().replace("—", " ").split())
             ind_words = set(industry.lower().replace("—", " ").split())
-            if ind_words & key_words:
+            if ind_words and ind_words & key_words:
                 candidates = [p for p in peers if p != t_upper]
                 break
+
+    # 3. Sector fallback
     if not candidates:
         candidates = [p for p in SECTOR_PEERS.get(sector, []) if p != t_upper]
 
-    # Step 2: dynamic search to supplement
-    dynamic = search_peers_yfinance(industry, sector, t_upper)
-    # Merge, deduplicate, keep candidates first
-    combined = list(dict.fromkeys(candidates + dynamic))[:30]
-
-    # Step 3: validate and rank by market cap similarity
-    return validate_peers(tuple(combined), mktcap) or candidates[:8]
+    # Return first 6 — enough for meaningful comparison, fast to fetch
+    return candidates[:6]
 
 
 def get_peers(ticker: str, info: dict, manual_override: str = "") -> List[str]:
