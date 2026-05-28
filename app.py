@@ -23,6 +23,7 @@ from technical           import calculate_indicators, generate_signals
 from valuation_sentiment import get_valuation_ratios, compare_with_peers, analyze_sentiment
 from scoring             import score_fundamental, score_valuation, score_sentiment, calculate_composite
 from tooltips            import TOOLTIP_CSS, tooltip_html, section_header, METRICS
+from search              import search_ticker, get_ticker_display_name, TICKER_NAMES
 from currency            import (fetch_fx_rates, fmt_currency, get_ticker_currency,
                                   apply_currency_to_info, sidebar_currency_selector,
                                   CURRENCY_SYMBOLS)
@@ -142,6 +143,63 @@ def render_mrow(metric_key, label, value_str, fs=""):
 
 # ─── Chart Builders ──────────────────────────────────────────────────────────
 
+
+def build_current_price_chart(hist: pd.DataFrame, ticker: str, info: dict) -> go.Figure:
+    """Simple area chart showing 2-year price history."""
+    if hist is None or hist.empty:
+        return go.Figure()
+    close  = hist["Close"].astype(float)
+    dates  = hist.index
+    color  = "#26a69a" if float(close.iloc[-1]) >= float(close.iloc[0]) else "#ef5350"
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=dates, y=close, name="Price",
+        mode="lines",
+        line=dict(color=color, width=2),
+        fill="tozeroy",
+        fillcolor=color.replace("#", "rgba(").rstrip(")") + ",0.08)" if color.startswith("#") else color,
+    ))
+    cp   = float(close.iloc[-1])
+    high = float(close.max())
+    low  = float(close.min())
+    chg  = (cp - float(close.iloc[0])) / float(close.iloc[0])
+    disp = st.session_state.get("display_ccy_code", info.get("currency","USD"))
+    rates = st.session_state.get("fx_rates", {})
+    cp_str = fmt_currency(cp, info.get("currency","USD"), disp, rates)
+
+    fig.add_hline(y=cp, line=dict(color="white", width=1, dash="dot"),
+                  annotation_text=f"  {cp_str}", annotation_font_size=11,
+                  annotation_font_color="white")
+    fig.update_layout(
+        height=260,
+        template="plotly_dark",
+        title=dict(
+            text=f"{ticker}  ·  {cp_str}  "
+                 f"<span style='color:{'#26a69a' if chg>=0 else '#ef5350'}'>"
+                 f"{'▲' if chg>=0 else '▼'} {abs(chg):.1%} (2Y)</span>",
+            font_size=14, x=0.01,
+        ),
+        margin=dict(l=50, r=30, t=50, b=30),
+        paper_bgcolor="#0e1117", plot_bgcolor="#1a1d2e",
+        showlegend=False,
+        xaxis=dict(showgrid=False, tickfont=dict(size=11)),
+        yaxis=dict(showgrid=True, gridcolor="rgba(255,255,255,0.06)",
+                   tickfont=dict(size=11)),
+        hoverlabel=dict(bgcolor="#1a1d2e", font_size=12),
+    )
+    # Annotate high/low
+    hi_idx = close.idxmax(); lo_idx = close.idxmin()
+    fig.add_annotation(x=hi_idx, y=high,
+        text=f"High {fmt_currency(high, info.get('currency','USD'), disp, rates)}",
+        showarrow=True, arrowhead=2, arrowcolor="#FFD700", font=dict(color="#FFD700", size=10),
+        bgcolor="#0e1117", bordercolor="#FFD700", borderwidth=1, ay=-30)
+    fig.add_annotation(x=lo_idx, y=low,
+        text=f"Low {fmt_currency(low, info.get('currency','USD'), disp, rates)}",
+        showarrow=True, arrowhead=2, arrowcolor="#ef5350", font=dict(color="#ef5350", size=10),
+        bgcolor="#0e1117", bordercolor="#ef5350", borderwidth=1, ay=30)
+    return fig
+
+
 def build_price_chart(hist, ind, ticker):
     fig = make_subplots(rows=4, cols=1, shared_xaxes=True,
                          row_heights=[0.55, 0.15, 0.15, 0.15], vertical_spacing=0.02,
@@ -220,23 +278,152 @@ def build_financials_chart(fund, ticker):
     rev = fund.get("revenue_series", {}); ni = fund.get("net_income_series", {})
     gm  = fund.get("gross_margin_series", {}); om = fund.get("op_margin_series", {}); nm = fund.get("net_margin_series", {})
     years = sorted(set(list(rev.keys()) + list(ni.keys())), reverse=True)[:5]; years.sort()
-    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.08,
-                         row_heights=[0.6, 0.4], subplot_titles=("Revenue & Net Income", "Margins"))
-    fig.add_trace(go.Bar(x=years, y=[rev.get(y) for y in years], name="Revenue", marker_color="#42A5F5", opacity=0.85), row=1, col=1)
-    fig.add_trace(go.Bar(x=years, y=[ni.get(y)  for y in years], name="Net Income", marker_color="#66BB6A", opacity=0.85), row=1, col=1)
-    for d, col, lbl in [(gm,"#FFD700","Gross"),(om,"#FF6B35","Op."),(nm,"#AB47BC","Net")]:
+
+    fig = make_subplots(
+        rows=2, cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.18,          # ← more breathing room between panels
+        row_heights=[0.58, 0.42],
+        subplot_titles=[
+            "<b>Revenue & Net Income</b>  (annual)",
+            "<b>Profit Margins</b>  (%)",
+        ],
+    )
+
+    # ── Panel 1: Revenue & Net Income bars ────────────────────────────────
+    fig.add_trace(go.Bar(
+        x=years, y=[rev.get(y) for y in years],
+        name="Revenue", marker_color="#42A5F5", opacity=0.85,
+        legendgroup="income",
+    ), row=1, col=1)
+    fig.add_trace(go.Bar(
+        x=years, y=[ni.get(y) for y in years],
+        name="Net Income", marker_color="#66BB6A", opacity=0.85,
+        legendgroup="income",
+    ), row=1, col=1)
+
+    # ── Panel 2: Margin lines ─────────────────────────────────────────────
+    for d, col, lbl in [
+        (gm, "#FFD700", "Gross Margin"),
+        (om, "#FF6B35", "Op. Margin"),
+        (nm, "#AB47BC", "Net Margin"),
+    ]:
         vals = [d.get(y) for y in years]
-        if any(v for v in vals):
-            fig.add_trace(go.Scatter(x=years, y=vals, name=lbl+" Margin", line=dict(color=col, width=2)), row=2, col=1)
+        if any(v is not None for v in vals):
+            pct_vals = [v * 100 if v is not None else None for v in vals]
+            fig.add_trace(go.Scatter(
+                x=years, y=pct_vals, name=lbl,
+                mode="lines+markers",
+                line=dict(color=col, width=2.5),
+                marker=dict(size=7),
+                legendgroup="margins",
+            ), row=2, col=1)
+
     fig.update_layout(
-        height=460, template="plotly_dark", barmode="group",
-        margin=dict(l=50, r=20, t=50, b=40),
-        paper_bgcolor="#0e1117", plot_bgcolor="#1a1d2e",
-        legend=dict(orientation="h", y=1.10, font_size=11),
+        height=520,
+        template="plotly_dark",
+        barmode="group",
+        margin=dict(l=60, r=30, t=60, b=40),
+        paper_bgcolor="#0e1117",
+        plot_bgcolor="#1a1d2e",
+        hoverlabel=dict(bgcolor="#1a1d2e", font_size=12),
+        # Two separate legend groups, positioned clearly
+        legend=dict(
+            orientation="h",
+            x=0, y=1.14,
+            font_size=11,
+            bgcolor="rgba(0,0,0,0)",
+            groupclick="toggleitem",
+        ),
+    )
+    # Format y-axis 2 as percentage
+    fig.update_yaxes(showgrid=True, gridcolor="rgba(255,255,255,0.06)", tickfont=dict(size=11))
+    fig.update_yaxes(ticksuffix="%", row=2, col=1)
+    fig.update_xaxes(tickfont=dict(size=11))
+
+    # Bold subplot titles
+    for ann in fig.layout.annotations:
+        ann.font.size = 12
+        ann.font.color = "#e2e8f0"
+    return fig
+
+
+def build_price_overview_chart(hist: pd.DataFrame, ticker: str) -> go.Figure:
+    """Clean price + volume chart for the Overview tab."""
+    if hist is None or hist.empty:
+        return go.Figure()
+
+    close  = hist["Close"]
+    volume = hist["Volume"]
+    dates  = hist.index
+
+    # Colour area under price green/red vs first price
+    start_price = float(close.iloc[0])
+    end_price   = float(close.iloc[-1])
+    area_color  = "rgba(38,166,154,0.15)" if end_price >= start_price else "rgba(239,83,80,0.12)"
+    line_color  = "#26a69a"               if end_price >= start_price else "#ef5350"
+
+    fig = make_subplots(rows=2, cols=1, shared_xaxes=True,
+                         row_heights=[0.78, 0.22], vertical_spacing=0.03)
+
+    # Price area
+    fig.add_trace(go.Scatter(
+        x=dates, y=close, name="Price",
+        line=dict(color=line_color, width=2),
+        fill="tozeroy", fillcolor=area_color,
+        hovertemplate="%{x|%b %d %Y}<br><b>%{y:.2f}</b><extra></extra>",
+    ), row=1, col=1)
+
+    # 50-day and 200-day SMA
+    if len(close) >= 50:
+        sma50 = close.rolling(50).mean()
+        fig.add_trace(go.Scatter(x=dates, y=sma50, name="SMA 50",
+            line=dict(color="#FF6B35", width=1.2, dash="dot"), opacity=0.8,
+            hovertemplate="SMA50: %{y:.2f}<extra></extra>"), row=1, col=1)
+    if len(close) >= 200:
+        sma200 = close.rolling(200).mean()
+        fig.add_trace(go.Scatter(x=dates, y=sma200, name="SMA 200",
+            line=dict(color="#00BCD4", width=1.2, dash="dot"), opacity=0.8,
+            hovertemplate="SMA200: %{y:.2f}<extra></extra>"), row=1, col=1)
+
+    # Volume bars
+    vol_colors = ["#26a69a" if c >= o else "#ef5350"
+                  for c, o in zip(hist["Close"], hist["Open"])]
+    fig.add_trace(go.Bar(x=dates, y=volume, name="Volume",
+        marker_color=vol_colors, opacity=0.6, showlegend=False,
+        hovertemplate="Vol: %{y:,.0f}<extra></extra>"), row=2, col=1)
+
+    # 52-week high/low lines
+    high_52 = float(close.tail(252).max()) if len(close) >= 252 else float(close.max())
+    low_52  = float(close.tail(252).min()) if len(close) >= 252 else float(close.min())
+    fig.add_hline(y=high_52, line=dict(color="#FFD700", width=1, dash="dot"),
+                   annotation_text=f"52W High {high_52:.2f}",
+                   annotation_font=dict(size=10, color="#FFD700"), row=1, col=1)
+    fig.add_hline(y=low_52,  line=dict(color="#94a3b8", width=1, dash="dot"),
+                   annotation_text=f"52W Low {low_52:.2f}",
+                   annotation_font=dict(size=10, color="#94a3b8"), row=1, col=1)
+
+    pct_chg = (end_price - start_price) / start_price * 100
+    fig.update_layout(
+        height=400,
+        template="plotly_dark",
+        title=dict(
+            text=f"{ticker} — 2-Year Price  "
+                 f"<span style='color:{line_color}'>{pct_chg:+.1f}% (2Y)</span>",
+            font_size=14, x=0.01,
+        ),
+        margin=dict(l=50, r=30, t=50, b=30),
+        xaxis_rangeslider_visible=False,
+        legend=dict(orientation="h", y=1.07, x=0, font_size=11,
+                    bgcolor="rgba(0,0,0,0)"),
+        paper_bgcolor="#0e1117",
+        plot_bgcolor="#1a1d2e",
+        hovermode="x unified",
         hoverlabel=dict(bgcolor="#1a1d2e", font_size=12),
     )
-    fig.update_yaxes(showgrid=True, gridcolor="rgba(255,255,255,0.06)", tickfont=dict(size=11))
-    fig.update_xaxes(tickfont=dict(size=11))
+    fig.update_yaxes(showgrid=True, gridcolor="rgba(255,255,255,0.06)",
+                      tickfont=dict(size=11))
+    fig.update_xaxes(showgrid=False, tickfont=dict(size=11))
     return fig
 
 
@@ -710,6 +897,11 @@ def render_stock_tab(ticker, data, dcf, fund, indicators, signals,
                             f"EPS beat rate: {beat_pct:.0%} ({len(past_surp)} quarters)</div>", unsafe_allow_html=True)
 
         with col2:
+            # Price chart spanning full width above metrics
+            hist = data.get("hist_2y", pd.DataFrame())
+            if not hist.empty:
+                fig_price = build_current_price_chart(hist, ticker, info)
+                st.plotly_chart(fig_price, use_container_width=True)
             st.markdown(section_header("Key Metrics"), unsafe_allow_html=True)
             de_raw = info.get("debtToEquity"); de_norm = (de_raw or 0) / 100
             render_mrow("pe_trailing",   "P/E (TTM)",        fmt(info.get("trailingPE"), dec=1))
@@ -741,6 +933,13 @@ def render_stock_tab(ticker, data, dcf, fund, indicators, signals,
                 st.markdown(f"<div style='font-size:12px;color:#94a3b8;line-height:1.5;margin-top:10px'>"
                             f"{desc[:480]}{'…' if len(desc)>480 else ''}</div>", unsafe_allow_html=True)
 
+        # ── Price chart in overview ───────────────────────────────────────────
+        hist_ov = data.get("hist_2y", pd.DataFrame())
+        if not hist_ov.empty:
+            st.markdown("<div style='margin-top:18px'></div>", unsafe_allow_html=True)
+            st.plotly_chart(build_price_overview_chart(hist_ov, ticker),
+                            use_container_width=True)
+
     # ── Financials & DCF ──────────────────────────────────────────────────────
     with tabs[1]:
         st.plotly_chart(build_financials_chart(fund, ticker), use_container_width=True)
@@ -754,24 +953,114 @@ def render_stock_tab(ticker, data, dcf, fund, indicators, signals,
         st.markdown(section_header("🧮 DCF Intrinsic Value — 4 Models"), unsafe_allow_html=True)
         wacc_c = dcf.get("wacc_components", {})
         if wacc_c:
-            with st.expander("⚙️ WACC Components"):
-                w1,w2,w3,w4 = st.columns(4)
-                w1.metric("Beta",           fmt(wacc_c.get("beta"), dec=2))
-                w2.metric("Cost of Equity", fmt(wacc_c.get("cost_of_equity"), pct=True))
-                w3.metric("Cost of Debt",   fmt(wacc_c.get("cost_of_debt"), pct=True))
-                w4.metric("WACC",           fmt(wacc_c.get("wacc"), pct=True))
-                w1.metric("Risk-Free Rate", fmt(wacc_c.get("rfr"), pct=True))
-                w2.metric("Equity Weight",  fmt(wacc_c.get("w_equity"), pct=True))
-                w3.metric("Debt Weight",    fmt(wacc_c.get("w_debt"), pct=True))
-                w4.metric("Tax Rate",       fmt(wacc_c.get("tax_rate"), pct=True))
-                with st.container():
-                    st.markdown(tooltip_html("wacc","WACC Definition","", position="up"), unsafe_allow_html=True)
-                    st.markdown(tooltip_html("capm","CAPM Definition","", position="up"), unsafe_allow_html=True)
+            with st.expander("⚙️ WACC Components — hover ⓘ for explanations"):
+                # Inline formula display
+                beta = wacc_c.get("beta", 1.0) or 1.0
+                rfr  = wacc_c.get("rfr", 0.045) or 0.045
+                ke   = wacc_c.get("cost_of_equity", 0) or 0
+                kd   = wacc_c.get("cost_of_debt",   0) or 0
+                kd_pre = wacc_c.get("kd_pretax",    0) or 0
+                we   = wacc_c.get("w_equity",  1.0) or 1.0
+                wd   = wacc_c.get("w_debt",    0.0) or 0.0
+                tr   = wacc_c.get("tax_rate",  0.21) or 0.21
+                wacc_val = wacc_c.get("wacc", 0) or 0
+                mrp  = wacc_c.get("mrp", 0.055) or 0.055
+
+                # Row 1: CAPM components
+                st.markdown("**① Cost of Equity (CAPM)**")
+                st.markdown(tooltip_html("beta", "Beta (β)",
+                    f"{beta:.2f}",
+                    position=""), unsafe_allow_html=True)
+                st.markdown(tooltip_html("capm", "Risk-Free Rate (Rfr)",
+                    f"{rfr:.2%}  ← 10Y US Treasury live",
+                    position=""), unsafe_allow_html=True)
+                st.markdown(f"""
+                <div class='mrow' style='background:#1a2a3a;border-radius:6px;padding:6px 10px;margin:4px 0'>
+                  <span class='mrow-label'>Market Risk Premium (MRP)</span>
+                  <span class='mrow-val'>{mrp:.1%}  <span style='color:#718096;font-size:11px'>(long-run historical avg)</span></span>
+                </div>
+                <div class='mrow' style='background:#0d2040;border-radius:6px;padding:6px 10px;margin:4px 0;border:1px solid #2d4a6a'>
+                  <span style='color:#94a3b8'>Ke = Rfr + β × MRP = </span>
+                  <span style='color:#90cdf4;font-weight:700'>{rfr:.2%} + {beta:.2f} × {mrp:.1%} = <b>{ke:.2%}</b></span>
+                </div>""", unsafe_allow_html=True)
+
+                st.markdown("<br>**② Cost of Debt**", unsafe_allow_html=True)
+                st.markdown(f"""
+                <div class='mrow'>
+                  <span class='mrow-label'>Pre-tax Cost of Debt (Kd)</span>
+                  <span class='mrow-val'>{kd_pre:.2%}  <span style='color:#718096;font-size:11px'>(Interest / Total Debt)</span></span>
+                </div>
+                <div class='mrow'>
+                  <span class='mrow-label'>Corporate Tax Rate</span>
+                  <span class='mrow-val'>{tr:.1%}  <span style='color:#718096;font-size:11px'>(from income statement)</span></span>
+                </div>
+                <div class='mrow' style='background:#0d2040;border-radius:6px;padding:6px 10px;margin:4px 0;border:1px solid #2d4a6a'>
+                  <span style='color:#94a3b8'>After-tax Kd = Kd × (1 − Tax) = </span>
+                  <span style='color:#90cdf4;font-weight:700'>{kd_pre:.2%} × (1 − {tr:.1%}) = <b>{kd:.2%}</b></span>
+                </div>""", unsafe_allow_html=True)
+
+                st.markdown("<br>**③ Capital Weights**", unsafe_allow_html=True)
+                st.markdown(f"""
+                <div class='mrow'>
+                  <span class='mrow-label'>Equity Weight (E/V)</span>
+                  <span class='mrow-val'>{we:.1%}  <span style='color:#718096;font-size:11px'>(Market Cap / EV)</span></span>
+                </div>
+                <div class='mrow'>
+                  <span class='mrow-label'>Debt Weight (D/V)</span>
+                  <span class='mrow-val'>{wd:.1%}  <span style='color:#718096;font-size:11px'>(Total Debt / EV)</span></span>
+                </div>""", unsafe_allow_html=True)
+
+                st.markdown("<br>**④ Final WACC**", unsafe_allow_html=True)
+                st.markdown(f"""
+                <div class='mrow' style='background:#0d2a0d;border-radius:8px;padding:10px 14px;margin:6px 0;border:1px solid #2d5a2d'>
+                  <span style='color:#94a3b8;font-size:12px'>WACC = (E/V × Ke) + (D/V × Kd × (1−Tax))</span><br>
+                  <span style='color:#94a3b8;font-size:12px'>WACC = ({we:.1%} × {ke:.2%}) + ({wd:.1%} × {kd_pre:.2%} × {1-tr:.2f})</span><br>
+                  <span style='font-size:18px;font-weight:800;color:#68d391'>= {wacc_val:.2%}</span>
+                  <span style='color:#718096;font-size:11px;margin-left:8px'>
+                    {'(equity-funded — debt has minimal weight)' if wd < 0.05 else
+                     f'({we:.0%} equity / {wd:.0%} debt blend)'}
+                  </span>
+                </div>
+                <div style='font-size:11px;color:#718096;margin-top:4px'>
+                  📚 Source: <a href="https://www.investopedia.com/terms/w/wacc.asp" target="_blank"
+                  style="color:#42A5F5">Investopedia — WACC</a>  ·
+                  <a href="https://www.investopedia.com/terms/c/capm.asp" target="_blank"
+                  style="color:#42A5F5">CAPM</a>  ·
+                  <a href="https://www.investopedia.com/terms/b/beta.asp" target="_blank"
+                  style="color:#42A5F5">Beta</a>
+                </div>""", unsafe_allow_html=True)
 
         df_dcf = build_dcf_comparison(dcf, dcf.get("current_price", 0) or cp)
         st.dataframe(df_dcf, use_container_width=True, hide_index=True)
-        st.caption(f"Current price: **{fmt(dcf.get('current_price',0) or cp, prefix='$')}** · "
+        cp_ref = dcf.get("current_price", 0) or cp
+        st.caption(f"Current price: **{fmt(cp_ref, prefix='$')}** · "
                    f"FCF base: {fmt((dcf.get('fcf_list',[None])[0]), prefix='$') if dcf.get('fcf_list') else '—'}")
+
+        # What the numbers mean
+        with st.expander("📊 What do these DCF numbers actually mean?"):
+            st.markdown("""
+**Intrinsic Value** — What the model estimates each share is worth today, based on projected future cash flows discounted at the chosen rate. Compare this directly to the current stock price.
+
+| Intrinsic Value vs Price | Interpretation |
+|---|---|
+| IV > Price by > 30% | Potentially significantly undervalued |
+| IV > Price by 10–30% | Moderate upside / margin of safety |
+| IV ≈ Price (±10%) | Fairly valued |
+| IV < Price by 10–30% | Potentially overvalued |
+| IV < Price by > 30% | Significantly overvalued at this discount rate |
+
+**Upside / Downside** — The percentage difference between Intrinsic Value and current market price. A positive number means the model thinks the stock has upside.
+
+**Discount Rate** — The annual return you require (WACC/CAPM) or set manually. *Higher rate = lower intrinsic value.* This is the most sensitive input.
+
+**Stage 1 Growth (g)** — The FCF growth rate assumed for the first 5 years, estimated from historical Free Cash Flow CAGR. Capped at 35% to avoid unrealistic projections.
+
+**Terminal Growth (g)** — The perpetual growth rate after year 10, set at 2.5% (roughly in line with long-run nominal GDP growth). Changing this by even 0.5% can significantly move the Intrinsic Value.
+
+**TV as % of EV** — How much of the total DCF value comes from the Terminal Value. Values above 70–80% indicate the valuation is heavily dependent on long-term assumptions — treat with more caution.
+
+> ⚠️ **Important:** DCF models are directional tools, not precise targets. The intrinsic value range across the 4 models gives you an **uncertainty band** — a reasonable fair value range rather than a single number to bet on.
+            """)
 
         with st.expander("📖 In-Depth: How All 4 DCF Models Work"):
             st.markdown("""
@@ -885,23 +1174,32 @@ Each model answers a **different question**:
 
         if peer_data:
             st.markdown(section_header("Full Peer Table"), unsafe_allow_html=True)
-            rows = []
+            st.caption("Click **▶ Analyze** to add a peer as a new analysis tab.")
+
             for pt, pd_info in peer_data.items():
-                rows.append({
-                    "Ticker":    pt,
-                    "Name":      pd_info.get("name","")[:20],
-                    "Country":   pd_info.get("country",""),
-                    "Mkt Cap":   fmt(pd_info.get("market_cap"), prefix="$"),
-                    "P/E":       fmt(pd_info.get("pe_trailing"), dec=1),
-                    "Fwd P/E":   fmt(pd_info.get("pe_forward"), dec=1),
-                    "EV/EBITDA": fmt(pd_info.get("ev_ebitda"), dec=1),
-                    "Net Margin":f"{pd_info.get('net_margin',0)*100:.1f}%" if pd_info.get("net_margin") else "—",
-                    "ROE":       f"{pd_info.get('roe',0)*100:.1f}%"        if pd_info.get("roe")        else "—",
-                    "Rev Growth":f"{pd_info.get('revenue_growth',0)*100:.1f}%" if pd_info.get("revenue_growth") else "—",
-                    "D/E":       fmt((pd_info.get("debt_equity") or 0)/100, dec=2),
-                    "Beta":      fmt(pd_info.get("beta"), dec=2),
-                })
-            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+                with st.container():
+                    c1,c2,c3,c4,c5,c6,c7,c8 = st.columns([1.8, 1.5, 0.8, 0.8, 0.8, 0.8, 0.8, 1.2])
+                    c1.markdown(f"**{pt}**  ·  <span style='color:#94a3b8;font-size:11px'>{pd_info.get('name','')[:18]}</span>", unsafe_allow_html=True)
+                    c2.markdown(f"<span style='font-size:11px;color:#94a3b8'>{pd_info.get('country','')}</span>  {fmt(pd_info.get('market_cap'), prefix='$')}", unsafe_allow_html=True)
+                    c3.markdown(fmt(pd_info.get("pe_trailing"), dec=1))
+                    c4.markdown(fmt(pd_info.get("pe_forward"), dec=1))
+                    c5.markdown(f"{pd_info.get('net_margin',0)*100:.1f}%" if pd_info.get("net_margin") else "—")
+                    c6.markdown(f"{pd_info.get('roe',0)*100:.1f}%" if pd_info.get("roe") else "—")
+                    c7.markdown(f"{pd_info.get('revenue_growth',0)*100:.1f}%" if pd_info.get("revenue_growth") else "—")
+                    if c8.button(f"▶ Analyze", key=f"peer_analyze_{pt}_{ticker}", use_container_width=True):
+                        slots = st.session_state.get("ticker_slots", ["","","","",""])
+                        if pt not in slots:
+                            for si in range(5):
+                                if not slots[si]:
+                                    slots[si] = pt
+                                    st.session_state["ticker_slots"] = slots
+                                    st.toast(f"Added {pt} — click Analyze to run", icon="✅")
+                                    break
+                            else:
+                                st.toast("All 5 slots are full — remove one first", icon="⚠️")
+                        else:
+                            st.toast(f"{pt} is already in your analysis", icon="ℹ️")
+                st.divider()
 
     # ── Technical Analysis ────────────────────────────────────────────────────
     with tabs[3]:
@@ -1152,15 +1450,64 @@ def main():
     with st.sidebar:
         st.markdown("# 📈 Stock Analyzer")
         st.markdown("---")
-        st.markdown("**Enter up to 5 tickers**")
-        st.caption("US: AAPL · EU: ASML.AS SHEL.L SAP.DE TTE.PA · JP: 7203.T · KR: 005930.KS · HK: 0700.HK")
+        st.markdown("**Search & add stocks**")
+        st.caption("Type a name (e.g. Apple) or ticker (AAPL, ASML.AS, 7203.T)")
+
+        # ── Live search box ──────────────────────────────────────────────────
+        search_query = st.text_input("🔍 Search by name or ticker", key="search_q",
+                                      placeholder="e.g. Microsoft, ASML, Samsung…",
+                                      label_visibility="collapsed")
+        if search_query and len(search_query) >= 2:
+            with st.spinner("Searching…"):
+                results = search_ticker(search_query, max_results=8)
+            if results:
+                st.caption("Click to add:")
+                cols_s = st.columns(2)
+                for idx, r in enumerate(results[:6]):
+                    label = f"{r['symbol']}"
+                    sub   = r['name'][:22] + ("…" if len(r['name']) > 22 else "")
+                    with cols_s[idx % 2]:
+                        if st.button(f"**{label}**\n{sub}", key=f"add_{r['symbol']}_{idx}",
+                                     use_container_width=True):
+                            slots = st.session_state.get("ticker_slots", ["","","","",""])
+                            for si in range(5):
+                                if not slots[si]:
+                                    slots[si] = r["symbol"]
+                                    st.session_state["ticker_slots"] = slots
+                                    break
+                            st.rerun()
+            else:
+                st.caption("No results — try a different name or enter the ticker directly.")
+
+        st.markdown("**Selected tickers:**")
+
+        # ── Ticker slots ─────────────────────────────────────────────────────
+        if "ticker_slots" not in st.session_state:
+            st.session_state["ticker_slots"] = ["", "", "", "", ""]
+        slots = st.session_state["ticker_slots"]
 
         ticker_inputs = []
+        new_slots = []
         for i in range(5):
-            t = st.text_input(f"Ticker {i+1}", key=f"t{i}",
-                              label_visibility="collapsed", placeholder=f"Ticker {i+1}")
-            if t.strip():
-                ticker_inputs.append(t.strip().upper())
+            col_t, col_x = st.columns([4, 1])
+            with col_t:
+                val = st.text_input(f"Slot {i+1}", value=slots[i], key=f"t{i}",
+                                    label_visibility="collapsed",
+                                    placeholder=f"Ticker {i+1}")
+                # Look up name for display
+                if val.strip():
+                    name = TICKER_NAMES.get(val.strip().upper(), "")
+                    if name:
+                        st.caption(f"↳ {name[:30]}")
+            with col_x:
+                if slots[i] and st.button("✕", key=f"clear_{i}", help="Remove"):
+                    slots[i] = ""
+                    st.session_state["ticker_slots"] = slots
+                    st.rerun()
+            new_slots.append(val.strip().upper() if val.strip() else "")
+            if val.strip():
+                ticker_inputs.append(val.strip().upper())
+        st.session_state["ticker_slots"] = new_slots
 
         st.markdown("---")
         fixed_rate = st.slider("Fixed Discount Rate (Model 3)", 4.0, 20.0, 10.0, 0.5, format="%.1f%%") / 100
