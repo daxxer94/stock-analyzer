@@ -1831,11 +1831,10 @@ def main():
                 if not slots[si]:
                     slots[si] = pending
                     st.session_state["ticker_slots"] = slots
-                    # Also set widget key so text_input shows it on this run
-                    if f"t{si}" not in st.session_state:
-                        st.session_state[f"t{si}"] = pending
+                    st.session_state[f"t{si}"] = pending
                     break
-        # Don't rerun — let the page render with updated slots naturally
+        # Flag to auto-run analysis on this render cycle
+        st.session_state["auto_analyze"] = True
 
     with st.sidebar:
         st.markdown("# 📈 Stock Analyzer")
@@ -1973,7 +1972,8 @@ def main():
         st.info("👈 Enter tickers in the sidebar, then click **Analyze**.")
         return
 
-    if run_btn and ticker_inputs:
+    auto_analyze = st.session_state.pop("auto_analyze", False)
+    if (run_btn or auto_analyze) and ticker_inputs:
         with st.spinner("Fetching data and running analysis…"):
             rfr     = fetch_risk_free_rate()
             results = {}
@@ -2018,6 +2018,13 @@ def main():
             progress.progress(1.0, text="Done!")
             st.session_state["results"] = results
             st.session_state["rfr"]     = rfr
+            # Feedback for peer analysis
+            new_peer = st.session_state.pop("pending_analyze", None)
+            if new_peer:
+                if new_peer in results and not results[new_peer].get("error"):
+                    st.success(f"✅ {new_peer} analyzed — see the new tab below.")
+                elif new_peer in results:
+                    st.error(f"Could not analyze {new_peer}: {results[new_peer].get('error','Unknown error')}")
 
     results = st.session_state.get("results", {})
     rfr     = st.session_state.get("rfr", 0.045)
