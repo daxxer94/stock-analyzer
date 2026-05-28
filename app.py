@@ -1189,13 +1189,16 @@ Each model answers a **different question**:
                     if c8.button(f"▶ Analyze", key=f"peer_analyze_{pt}_{ticker}", use_container_width=True):
                         slots = st.session_state.get("ticker_slots", ["","","","",""])
                         if pt not in slots:
+                            added = False
                             for si in range(5):
                                 if not slots[si]:
                                     slots[si] = pt
                                     st.session_state["ticker_slots"] = slots
+                                    st.session_state[f"t{si}"] = pt
                                     st.toast(f"Added {pt} — click Analyze to run", icon="✅")
+                                    added = True
                                     break
-                            else:
+                            if not added:
                                 st.toast("All 5 slots are full — remove one first", icon="⚠️")
                         else:
                             st.toast(f"{pt} is already in your analysis", icon="ℹ️")
@@ -1474,6 +1477,7 @@ def main():
                                 if not slots[si]:
                                     slots[si] = r["symbol"]
                                     st.session_state["ticker_slots"] = slots
+                                    st.session_state[f"t{si}"] = r["symbol"]
                                     break
                             st.rerun()
             else:
@@ -1486,23 +1490,32 @@ def main():
             st.session_state["ticker_slots"] = ["", "", "", "", ""]
         slots = st.session_state["ticker_slots"]
 
+        # Only seed widget keys that haven't been set yet (first load).
+        # After that, the text_input widgets own their own state via their keys.
+        # Programmatic adds (search button, peer button) set st.session_state[f"t{i}"]
+        # directly and call st.rerun(), which is the correct Streamlit pattern.
+        for i in range(5):
+            if f"t{i}" not in st.session_state:
+                st.session_state[f"t{i}"] = slots[i]
+
         ticker_inputs = []
         new_slots = []
         for i in range(5):
             col_t, col_x = st.columns([4, 1])
             with col_t:
-                val = st.text_input(f"Slot {i+1}", value=slots[i], key=f"t{i}",
+                val = st.text_input(f"Slot {i+1}", key=f"t{i}",
                                     label_visibility="collapsed",
                                     placeholder=f"Ticker {i+1}")
                 # Look up name for display
                 if val.strip():
-                    name = TICKER_NAMES.get(val.strip().upper(), "")
-                    if name:
-                        st.caption(f"↳ {name[:30]}")
+                    disp_name = TICKER_NAMES.get(val.strip().upper(), "")
+                    if disp_name:
+                        st.caption(f"↳ {disp_name[:30]}")
             with col_x:
                 if slots[i] and st.button("✕", key=f"clear_{i}", help="Remove"):
                     slots[i] = ""
                     st.session_state["ticker_slots"] = slots
+                    st.session_state[f"t{i}"] = ""
                     st.rerun()
             new_slots.append(val.strip().upper() if val.strip() else "")
             if val.strip():

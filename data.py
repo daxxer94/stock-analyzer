@@ -28,9 +28,7 @@ def _retry(fn, retries=4, base_delay=2.0, label=""):
             # Only retry on rate-limit or server errors
             if any(x in msg for x in ["429", "too many", "rate", "502", "503", "504", "timeout"]):
                 wait = base_delay * (2 ** attempt) + random.uniform(0.5, 1.5)
-                if label:
-                    st.toast(f"⏳ Rate limited on {label} — waiting {wait:.0f}s…", icon="⏳")
-                time.sleep(wait)
+                time.sleep(wait)  # no st.toast here — can't use UI calls inside cached functions
             else:
                 raise  # non-rate-limit error — don't retry
     raise last_err
