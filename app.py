@@ -30,6 +30,7 @@ from currency            import (fetch_fx_rates, fmt_currency, get_ticker_curren
 from sec_data            import (fetch_news, build_news_search_links, fetch_sec_cik,
                                   fetch_sec_filings, extract_customers_suppliers,
                                   generate_swot, get_regulatory_info)
+from screener_ui         import render_screener_page
 
 # ─── Page config ─────────────────────────────────────────────────────────────
 try:
@@ -1838,9 +1839,30 @@ def main():
 
     with st.sidebar:
         st.markdown("# 📈 Stock Analyzer")
+
+        # ── Page navigation ───────────────────────────────────────────────────
+        nav_page = st.session_state.get("nav_page", "analyzer")
+        nav_sel  = st.radio(
+            "Navigation",
+            options=["📈 Analyzer", "🔍 Screener"],
+            index=0 if nav_page == "analyzer" else 1,
+            horizontal=True,
+            key="nav_radio",
+            label_visibility="collapsed",
+        )
+        if "Screener" in nav_sel:
+            st.session_state["nav_page"] = "screener"
+        else:
+            st.session_state["nav_page"] = "analyzer"
+
         st.markdown("---")
-        st.markdown("**Search & add stocks**")
-        st.caption("Type a name (e.g. Apple) or ticker (AAPL, ASML.AS, 7203.T)")
+
+        # Only show analyzer controls on analyzer page
+        if st.session_state.get("nav_page", "analyzer") == "screener":
+            st.caption("Use the screener panel on the right to find stocks.")
+        else:
+            st.markdown("**Search & add stocks**")
+            st.caption("Type a name (e.g. Apple) or ticker (AAPL, ASML.AS, 7203.T)")
 
         # ── Live search box ──────────────────────────────────────────────────
         search_query = st.text_input("🔍 Search by name or ticker", key="search_q",
@@ -1946,6 +1968,11 @@ def main():
 
     if deploy_btn:
         st.session_state["show_deploy"] = True
+
+    # ── Page routing ─────────────────────────────────────────────────────────
+    if st.session_state.get("nav_page") == "screener":
+        render_screener_page()
+        return
 
     if st.session_state.get("show_deploy"):
         render_deploy_guide()
