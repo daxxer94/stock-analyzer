@@ -145,63 +145,99 @@ def render_mrow(metric_key, label, value_str, fs=""):
 
 
 def build_current_price_chart(hist: pd.DataFrame, ticker: str, info: dict) -> go.Figure:
-    """Simple area chart showing 2-year price history."""
+    """Area chart: full price history with clear currency label, date x-axis, clean legend."""
     if hist is None or hist.empty:
         return go.Figure()
+
     close  = hist["Close"].astype(float)
     dates  = hist.index
-    color     = "#26a69a" if float(close.iloc[-1]) >= float(close.iloc[0]) else "#ef5350"
-    # Convert hex to rgba properly
-    r = int(color[1:3], 16); g = int(color[3:5], 16); b = int(color[5:7], 16)
-    fill_color = f"rgba({r},{g},{b},0.08)"
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(
-        x=dates, y=close, name="Price",
-        mode="lines",
-        line=dict(color=color, width=2),
-        fill="tozeroy",
-        fillcolor=fill_color,
-    ))
+    is_up  = float(close.iloc[-1]) >= float(close.iloc[0])
+    color  = "#26a69a" if is_up else "#ef5350"
+    r, g, b = int(color[1:3],16), int(color[3:5],16), int(color[5:7],16)
+
+    # Currency info
+    native_ccy  = info.get("currency", "USD")
+    disp_ccy    = st.session_state.get("display_ccy_code", native_ccy)
+    rates       = st.session_state.get("fx_rates", {})
+    ccy_sym     = CURRENCY_SYMBOLS.get(disp_ccy, disp_ccy)
+    showing_ccy = disp_ccy if disp_ccy != native_ccy else native_ccy
+
     cp   = float(close.iloc[-1])
     high = float(close.max())
     low  = float(close.min())
     chg  = (cp - float(close.iloc[0])) / float(close.iloc[0])
-    disp = st.session_state.get("display_ccy_code", info.get("currency","USD"))
-    rates = st.session_state.get("fx_rates", {})
-    cp_str = fmt_currency(cp, info.get("currency","USD"), disp, rates)
+    cp_str   = fmt_currency(cp,   native_ccy, disp_ccy, rates)
+    high_str = fmt_currency(high, native_ccy, disp_ccy, rates)
+    low_str  = fmt_currency(low,  native_ccy, disp_ccy, rates)
 
+    years = (dates[-1] - dates[0]).days / 365.25
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=dates, y=close,
+        name=f"{ticker} ({showing_ccy})",
+        mode="lines",
+        line=dict(color=color, width=2),
+        fill="tozeroy",
+        fillcolor=f"rgba({r},{g},{b},0.08)",
+        hovertemplate=f"{ccy_sym}%{{y:,.2f}}<br>%{{x|%b %d, %Y}}<extra></extra>",
+    ))
+
+    # Current price line
     fig.add_hline(y=cp, line=dict(color="white", width=1, dash="dot"),
-                  annotation_text=f"  {cp_str}", annotation_font_size=11,
-                  annotation_font_color="white")
+                  annotation_text=f" {cp_str}", annotation_position="right",
+                  annotation_font=dict(size=11, color="white"))
+
     fig.update_layout(
-        height=260,
+        height=280,
         template="plotly_dark",
-        title=dict(
-            text=f"{ticker}  ·  {cp_str}  "
-                 f"<span style='color:{'#26a69a' if chg>=0 else '#ef5350'}'>"
-                 f"{'▲' if chg>=0 else '▼'} {abs(chg):.1%} (2Y)</span>",
-            font_size=14, x=0.01,
+        margin=dict(l=60, r=80, t=70, b=40),
+        paper_bgcolor="#0e1117",
+        plot_bgcolor="#1a1d2e",
+        showlegend=True,
+        legend=dict(
+            orientation="h",
+            x=0, y=1.18,          # above chart, no overlap with title
+            font=dict(size=12),
+            bgcolor="rgba(0,0,0,0)",
         ),
-        margin=dict(l=50, r=30, t=50, b=30),
-        paper_bgcolor="#0e1117", plot_bgcolor="#1a1d2e",
-        showlegend=False,
-        xaxis=dict(showgrid=False, tickfont=dict(size=11)),
-        yaxis=dict(showgrid=True, gridcolor="rgba(255,255,255,0.06)",
-                   tickfont=dict(size=11)),
+        title=dict(
+            text=(
+                f"<b>{ticker}</b>  ·  {cp_str}  "
+                f"<span style='color:{'#26a69a' if is_up else '#ef5350'}'>"
+                f"{'▲' if is_up else '▼'} {abs(chg):.1%}</span>"
+                f"  <span style='font-size:11px;color:#718096'>({years:.1f}Y history · {showing_ccy})</span>"
+            ),
+            font=dict(size=13),
+            x=0.01, y=0.97,
+        ),
+        xaxis=dict(
+            showgrid=False,
+            tickfont=dict(size=11),
+            tickformat="%b '%y",     # "Jan '23" format — no decimals
+            dtick="M6",              # tick every 6 months
+            tickangle=-30,
+        ),
+        yaxis=dict(
+            showgrid=True,
+            gridcolor="rgba(255,255,255,0.06)",
+            tickfont=dict(size=11),
+            tickprefix=ccy_sym,
+        ),
         hoverlabel=dict(bgcolor="#1a1d2e", font_size=12),
     )
-    # Annotate high/low
-    hi_idx = close.idxmax(); lo_idx = close.idxmin()
-    fig.add_annotation(x=hi_idx, y=high,
-        text=f"High {fmt_currency(high, info.get('currency','USD'), disp, rates)}",
-        showarrow=True, arrowhead=2, arrowcolor="#FFD700", font=dict(color="#FFD700", size=10),
-        bgcolor="#0e1117", bordercolor="#FFD700", borderwidth=1, ay=-30)
-    fig.add_annotation(x=lo_idx, y=low,
-        text=f"Low {fmt_currency(low, info.get('currency','USD'), disp, rates)}",
-        showarrow=True, arrowhead=2, arrowcolor="#ef5350", font=dict(color="#ef5350", size=10),
-        bgcolor="#0e1117", bordercolor="#ef5350", borderwidth=1, ay=30)
-    return fig
 
+    # High/low annotations
+    hi_idx = close.idxmax(); lo_idx = close.idxmin()
+    fig.add_annotation(x=hi_idx, y=high, text=f"▲ {high_str}",
+        showarrow=True, arrowhead=2, arrowcolor="#FFD700",
+        font=dict(color="#FFD700", size=10), bgcolor="#0e1117",
+        bordercolor="#FFD700", borderwidth=1, ay=-28)
+    fig.add_annotation(x=lo_idx, y=low, text=f"▼ {low_str}",
+        showarrow=True, arrowhead=2, arrowcolor="#ef5350",
+        font=dict(color="#ef5350", size=10), bgcolor="#0e1117",
+        bordercolor="#ef5350", borderwidth=1, ay=28)
+    return fig
 
 def build_price_chart(hist, ind, ticker):
     fig = make_subplots(rows=4, cols=1, shared_xaxes=True,
@@ -280,32 +316,38 @@ def build_price_chart(hist, ind, ticker):
 def build_financials_chart(fund, ticker):
     rev = fund.get("revenue_series", {}); ni = fund.get("net_income_series", {})
     gm  = fund.get("gross_margin_series", {}); om = fund.get("op_margin_series", {}); nm = fund.get("net_margin_series", {})
-    years = sorted(set(list(rev.keys()) + list(ni.keys())), reverse=True)[:5]; years.sort()
+    years = sorted(set(list(rev.keys()) + list(ni.keys())), reverse=True)[:6]; years.sort()
+
+    # Get display currency
+    native_ccy = "USD"
+    disp_ccy   = st.session_state.get("display_ccy_code", "USD")
+    ccy_sym    = CURRENCY_SYMBOLS.get(disp_ccy, disp_ccy)
+
+    # Use two completely independent figures stacked — cleanest legend control
+    from plotly.subplots import make_subplots
 
     fig = make_subplots(
         rows=2, cols=1,
-        shared_xaxes=True,
-        vertical_spacing=0.18,          # ← more breathing room between panels
-        row_heights=[0.58, 0.42],
-        subplot_titles=[
-            "<b>Revenue & Net Income</b>  (annual)",
-            "<b>Profit Margins</b>  (%)",
-        ],
+        vertical_spacing=0.22,
+        row_heights=[0.55, 0.45],
+        subplot_titles=["", ""],   # we use annotations instead
     )
 
-    # ── Panel 1: Revenue & Net Income bars ────────────────────────────────
+    # ── Panel 1: Revenue & Net Income ────────────────────────────────────
     fig.add_trace(go.Bar(
         x=years, y=[rev.get(y) for y in years],
         name="Revenue", marker_color="#42A5F5", opacity=0.85,
-        legendgroup="income",
+        legendgroup="g1", legendgrouptitle=dict(text=""),
+        hovertemplate=f"{ccy_sym}%{{y:,.0f}}<extra>Revenue</extra>",
     ), row=1, col=1)
     fig.add_trace(go.Bar(
         x=years, y=[ni.get(y) for y in years],
         name="Net Income", marker_color="#66BB6A", opacity=0.85,
-        legendgroup="income",
+        legendgroup="g1",
+        hovertemplate=f"{ccy_sym}%{{y:,.0f}}<extra>Net Income</extra>",
     ), row=1, col=1)
 
-    # ── Panel 2: Margin lines ─────────────────────────────────────────────
+    # ── Panel 2: Margins ──────────────────────────────────────────────────
     for d, col, lbl in [
         (gm, "#FFD700", "Gross Margin"),
         (om, "#FF6B35", "Op. Margin"),
@@ -319,35 +361,57 @@ def build_financials_chart(fund, ticker):
                 mode="lines+markers",
                 line=dict(color=col, width=2.5),
                 marker=dict(size=7),
-                legendgroup="margins",
+                legendgroup="g2",
+                hovertemplate="%{y:.1f}%<extra>" + lbl + "</extra>",
             ), row=2, col=1)
 
+    # Subplot title annotations — manually placed to avoid overlap
+    fig.add_annotation(text=f"<b>Revenue & Net Income</b>  ({disp_ccy})",
+        xref="paper", yref="paper", x=0, y=1.02,
+        xanchor="left", showarrow=False,
+        font=dict(size=12, color="#e2e8f0"))
+    fig.add_annotation(text="<b>Profit Margins</b>",
+        xref="paper", yref="paper", x=0, y=0.44,
+        xanchor="left", showarrow=False,
+        font=dict(size=12, color="#e2e8f0"))
+
     fig.update_layout(
-        height=520,
+        height=580,
         template="plotly_dark",
         barmode="group",
-        margin=dict(l=60, r=30, t=60, b=40),
+        margin=dict(l=70, r=30, t=50, b=50),
         paper_bgcolor="#0e1117",
         plot_bgcolor="#1a1d2e",
         hoverlabel=dict(bgcolor="#1a1d2e", font_size=12),
-        # Two separate legend groups, positioned clearly
+        # Legend 1 (income): just above panel 1
+        # Legend 2 (margins): just above panel 2
+        # Plotly supports only one legend — use legend2 for second group
         legend=dict(
-            orientation="h",
-            x=0, y=1.14,
-            font_size=11,
-            bgcolor="rgba(0,0,0,0)",
-            groupclick="toggleitem",
+            orientation="h", x=0.55, y=1.02,
+            xanchor="left", yanchor="bottom",
+            font=dict(size=11), bgcolor="rgba(0,0,0,0)",
+            tracegroupgap=0,
+        ),
+        legend2=dict(
+            orientation="h", x=0.55, y=0.44,
+            xanchor="left", yanchor="bottom",
+            font=dict(size=11), bgcolor="rgba(0,0,0,0)",
+            tracegroupgap=0,
         ),
     )
-    # Format y-axis 2 as percentage
-    fig.update_yaxes(showgrid=True, gridcolor="rgba(255,255,255,0.06)", tickfont=dict(size=11))
-    fig.update_yaxes(ticksuffix="%", row=2, col=1)
-    fig.update_xaxes(tickfont=dict(size=11))
 
-    # Bold subplot titles
-    for ann in fig.layout.annotations:
-        ann.font.size = 12
-        ann.font.color = "#e2e8f0"
+    # Assign traces to legend2 (margins = g2)
+    for trace in fig.data:
+        if trace.legendgroup == "g2":
+            trace.legend = "legend2"
+
+    # Format axes
+    fig.update_yaxes(showgrid=True, gridcolor="rgba(255,255,255,0.06)",
+                     tickfont=dict(size=11), tickprefix=ccy_sym, row=1, col=1)
+    fig.update_yaxes(showgrid=True, gridcolor="rgba(255,255,255,0.06)",
+                     tickfont=dict(size=11), ticksuffix="%", row=2, col=1)
+    fig.update_xaxes(tickfont=dict(size=11), tickformat="%Y",
+                     dtick="M12", showgrid=False)
     return fig
 
 
@@ -871,7 +935,7 @@ def render_stock_tab(ticker, data, dcf, fund, indicators, signals,
 
     tabs = st.tabs(["📋 Overview", "💰 Financials & DCF", "📊 Valuation & Peers",
                      "📈 Technical Analysis", "🎯 Sentiment", "📅 Earnings & Forecasts",
-                     "🏢 Intelligence", "📰 News"])
+                     "🏢 Intelligence", "📰 News", "🔮 Prediction"])
 
     # ── Overview ──────────────────────────────────────────────────────────────
     with tabs[0]:
@@ -892,6 +956,20 @@ def render_stock_tab(ticker, data, dcf, fund, indicators, signals,
             score_bar("Valuation",    sc["valuation"],    _color_for_score(sc["valuation"]))
             score_bar("Technical",    sc["technical"],    _color_for_score(sc["technical"]))
             score_bar("Sentiment",    sc["sentiment"],    _color_for_score(sc["sentiment"]))
+            # Stock type classification
+            st_label, st_color, st_desc = classify_stock(info)
+            st.markdown(
+                f"<div style='margin:8px 0'>"
+                f"<span style='background:{st_color}22;color:{st_color};"
+                f"border:1px solid {st_color}44;border-radius:12px;"
+                f"padding:3px 12px;font-size:12px;font-weight:600'>{st_label}</span>"
+                f"</div>",
+                unsafe_allow_html=True
+            )
+            with st.expander("What does this mean?", expanded=False):
+                st.markdown(f"<div style='font-size:12px;color:#a0aec0'>{st_desc}</div>",
+                            unsafe_allow_html=True)
+
             # Earnings track record
             if beat_pct is not None:
                 color = "#00C853" if beat_pct > 0.6 else ("#F44336" if beat_pct < 0.4 else "#FFC107")
@@ -901,9 +979,12 @@ def render_stock_tab(ticker, data, dcf, fund, indicators, signals,
 
         with col2:
             # Price chart spanning full width above metrics
-            hist = data.get("hist_2y", pd.DataFrame())
-            if not hist.empty:
-                fig_price = build_current_price_chart(hist, ticker, info)
+            # Use 5y history for price chart (more context)
+            hist_price = data.get("hist_5y", pd.DataFrame())
+            if hist_price.empty:
+                hist_price = data.get("hist_2y", pd.DataFrame())
+            if not hist_price.empty:
+                fig_price = build_current_price_chart(hist_price, ticker, info)
                 st.plotly_chart(fig_price, use_container_width=True)
             st.markdown(section_header("Key Metrics"), unsafe_allow_html=True)
             de_raw = info.get("debtToEquity"); de_norm = (de_raw or 0) / 100
@@ -1179,6 +1260,12 @@ Each model answers a **different question**:
             st.markdown(section_header("Full Peer Table"), unsafe_allow_html=True)
             st.caption("Click **▶ Analyze** to add a peer as a new analysis tab.")
 
+            # Column headers
+            hcols = st.columns([1.8, 1.5, 0.8, 0.8, 0.8, 0.8, 0.8, 1.2])
+            for hcol, htxt in zip(hcols, ["Ticker / Name","Country · Mkt Cap","P/E","Fwd P/E","Net Mgn","ROE","Rev Grw","Action"]):
+                hcol.markdown(f"<div style='font-size:11px;font-weight:700;color:#94a3b8;padding:4px 0;border-bottom:2px solid #3a3f5c'>{htxt}</div>",
+                              unsafe_allow_html=True)
+
             for pt, pd_info in peer_data.items():
                 with st.container():
                     c1,c2,c3,c4,c5,c6,c7,c8 = st.columns([1.8, 1.5, 0.8, 0.8, 0.8, 0.8, 0.8, 1.2])
@@ -1190,21 +1277,8 @@ Each model answers a **different question**:
                     c6.markdown(f"{pd_info.get('roe',0)*100:.1f}%" if pd_info.get("roe") else "—")
                     c7.markdown(f"{pd_info.get('revenue_growth',0)*100:.1f}%" if pd_info.get("revenue_growth") else "—")
                     if c8.button(f"▶ Analyze", key=f"peer_analyze_{pt}_{ticker}", use_container_width=True):
-                        slots = st.session_state.get("ticker_slots", ["","","","",""])
-                        if pt not in slots:
-                            added = False
-                            for si in range(5):
-                                if not slots[si]:
-                                    slots[si] = pt
-                                    st.session_state["ticker_slots"] = slots
-                                    st.session_state[f"t{si}"] = pt
-                                    st.toast(f"Added {pt} — click Analyze to run", icon="✅")
-                                    added = True
-                                    break
-                            if not added:
-                                st.toast("All 5 slots are full — remove one first", icon="⚠️")
-                        else:
-                            st.toast(f"{pt} is already in your analysis", icon="ℹ️")
+                        st.session_state["pending_add_ticker"] = pt
+                        st.rerun()
                 st.divider()
 
     # ── Technical Analysis ────────────────────────────────────────────────────
@@ -1291,6 +1365,301 @@ Each model answers a **different question**:
     with tabs[7]:
         render_news_tab(ticker, info, data.get("news", []))
 
+    # ── Prediction ────────────────────────────────────────────────────────────
+    with tabs[8]:
+        render_prediction_tab(ticker, info, dcf, sentiment, scoring, signals, fund)
+
+
+
+def classify_stock(info: dict) -> tuple[str, str, str]:
+    """
+    Classify stock as Growth / Value / Dividend / GARP / Speculative etc.
+    Returns (label, color, description)
+    """
+    pe      = info.get("trailingPE") or 0
+    fpe     = info.get("forwardPE") or 0
+    peg     = info.get("pegRatio") or 0
+    rg      = info.get("revenueGrowth") or 0
+    eg      = info.get("earningsGrowth") or 0
+    div_y   = info.get("dividendYield") or 0
+    pb      = info.get("priceToBook") or 0
+    beta    = info.get("beta") or 1.0
+    mktcap  = info.get("marketCap") or 0
+    nm      = info.get("profitMargins") or 0
+
+    # Dividend stock
+    if div_y > 0.035 and pe < 35:
+        return ("💰 Dividend", "#FFD700",
+                f"Dividend yield {div_y:.1%} — income-focused stock. "
+                f"Typically mature, stable companies returning cash to shareholders.")
+
+    # High-growth / momentum
+    if rg > 0.20 and (pe > 40 or fpe > 30):
+        return ("🚀 Growth", "#00C853",
+                f"Revenue growing {rg:.0%} YoY with premium valuation (P/E {pe:.0f}x). "
+                f"Market pricing in high future growth — expect volatility.")
+
+    # GARP (Growth at Reasonable Price)
+    if 0 < peg < 1.5 and rg > 0.08 and pe < 35:
+        return ("⚖️ GARP", "#42A5F5",
+                f"PEG {peg:.2f} — growth available at a reasonable price. "
+                f"Balanced profile: {rg:.0%} revenue growth, P/E {pe:.0f}x.")
+
+    # Deep value
+    if pe and 0 < pe < 12 and pb and 0 < pb < 1.5:
+        return ("💎 Deep Value", "#FF6B35",
+                f"Low P/E ({pe:.0f}x) and P/B ({pb:.2f}x) suggest potential undervaluation. "
+                f"May be cyclical, out-of-favour, or a turnaround play.")
+
+    # Value
+    if pe and 0 < pe < 18 and rg < 0.12:
+        return ("🏛️ Value", "#81C784",
+                f"Below-market P/E ({pe:.0f}x) with modest growth ({rg:.0%}). "
+                f"Typically mature business with stable earnings and reasonable valuation.")
+
+    # Speculative / unprofitable
+    if nm and nm < 0:
+        return ("⚡ Speculative", "#EF5350",
+                f"Currently unprofitable (net margin {nm:.1%}). "
+                f"Valuation depends entirely on future growth expectations — high risk/reward.")
+
+    # Small/micro cap growth
+    if mktcap < 2e9 and rg > 0.10:
+        return ("🌱 Small-Cap Growth", "#AB47BC",
+                f"Small-cap ({fmt(mktcap, prefix='$')}) with {rg:.0%} revenue growth. "
+                f"Higher risk but potentially higher return than large-cap peers.")
+
+    # Blend / balanced default
+    return ("🔵 Blend", "#90CAF9",
+            f"Balanced characteristics — neither a pure growth nor pure value stock. "
+            f"P/E {pe:.0f}x, revenue growth {rg:.0%}.")
+
+
+def build_price_prediction(ticker, info, dcf, sentiment, scoring, signals, fund) -> dict:
+    """
+    Build a 1-3 year price prediction by combining:
+      - DCF intrinsic value range (4 models)
+      - Analyst price targets
+      - Technical trend direction
+      - Earnings growth trajectory
+    Returns a dict with prediction data.
+    """
+    cp = get_current_price(info)
+    if not cp:
+        return {}
+
+    targets = []
+
+    # DCF targets
+    dcf_values = []
+    for key in ["wacc","capm","two_stage","fixed"]:
+        m = dcf.get(key, {})
+        iv = m.get("intrinsic_value")
+        if iv and iv > 0 and not m.get("error"):
+            dcf_values.append(iv)
+    if dcf_values:
+        dcf_low  = min(dcf_values)
+        dcf_high = max(dcf_values)
+        dcf_mid  = np.mean(dcf_values)
+        targets.append(("DCF Models (avg)",   dcf_mid,  "#42A5F5"))
+        targets.append(("DCF Conservative",   dcf_low,  "#90CAF9"))
+        targets.append(("DCF Optimistic",     dcf_high, "#1E88E5"))
+
+    # Analyst consensus target
+    analyst_target = sentiment.get("target_mean")
+    analyst_high   = sentiment.get("target_high")
+    analyst_low    = sentiment.get("target_low")
+    if analyst_target:
+        targets.append(("Analyst Consensus",  analyst_target, "#FFD700"))
+    if analyst_high:
+        targets.append(("Analyst High",       analyst_high,   "#66BB6A"))
+    if analyst_low:
+        targets.append(("Analyst Low",        analyst_low,    "#EF9A9A"))
+
+    # EPS-based price target (forward P/E × forward EPS × peer multiple)
+    fpe  = info.get("forwardPE")  or info.get("trailingPE") or 0
+    feps = info.get("forwardEps") or info.get("trailingEps") or 0
+    eg   = info.get("earningsGrowth") or 0
+    if fpe and feps and feps > 0:
+        # Project forward EPS 2 years at estimated growth rate
+        growth = max(-0.20, min(0.50, eg or 0.05))
+        eps_2y = feps * (1 + growth) ** 2
+        price_2y = eps_2y * fpe
+        targets.append(("EPS Growth Model (2Y)", price_2y, "#AB47BC"))
+
+    if not targets:
+        return {}
+
+    # Consensus view weighted by source reliability
+    all_prices = [t[1] for t in targets if t[1] > 0]
+    consensus  = float(np.median(all_prices)) if all_prices else cp
+    low_est    = float(np.percentile(all_prices, 25)) if len(all_prices) >= 2 else min(all_prices)
+    high_est   = float(np.percentile(all_prices, 75)) if len(all_prices) >= 2 else max(all_prices)
+
+    upside_mid  = (consensus - cp) / cp
+    upside_high = (high_est  - cp) / cp
+    upside_low  = (low_est   - cp) / cp
+
+    # Overall signal
+    score = scoring.get("composite", 5)
+    if upside_mid > 0.25 and score >= 6:
+        outlook = ("🟢 Bullish", "#00C853")
+    elif upside_mid > 0.10:
+        outlook = ("🟡 Moderately Bullish", "#FFC107")
+    elif upside_mid > -0.10:
+        outlook = ("🟡 Neutral", "#FFC107")
+    elif upside_mid > -0.25:
+        outlook = ("🔴 Moderately Bearish", "#FF9800")
+    else:
+        outlook = ("🔴 Bearish", "#EF5350")
+
+    return {
+        "current_price": cp,
+        "targets":       targets,
+        "consensus":     consensus,
+        "low_est":       low_est,
+        "high_est":      high_est,
+        "upside_mid":    upside_mid,
+        "upside_high":   upside_high,
+        "upside_low":    upside_low,
+        "outlook":       outlook,
+        "dcf_values":    dcf_values,
+        "analyst_target": analyst_target,
+    }
+
+
+def render_prediction_tab(ticker, info, dcf, sentiment, scoring, signals, fund):
+    """1-3 Year Price Prediction tab."""
+    pred = build_price_prediction(ticker, info, dcf, sentiment, scoring, signals, fund)
+    if not pred:
+        st.info("Insufficient data to generate a price prediction for this ticker.")
+        return
+
+    cp          = pred["current_price"]
+    native_ccy  = info.get("currency", "USD")
+    disp_ccy    = st.session_state.get("display_ccy_code", native_ccy)
+    rates       = st.session_state.get("fx_rates", {})
+    ccy_sym     = CURRENCY_SYMBOLS.get(disp_ccy, disp_ccy)
+
+    # ── Header ────────────────────────────────────────────────────────────────
+    outlook_label, outlook_color = pred["outlook"]
+    consensus_str = fmt_currency(pred["consensus"], native_ccy, disp_ccy, rates)
+    low_str       = fmt_currency(pred["low_est"],   native_ccy, disp_ccy, rates)
+    high_str      = fmt_currency(pred["high_est"],  native_ccy, disp_ccy, rates)
+
+    st.markdown(f"""
+    <div style='background:#1a1d2e;border:1px solid #3a3f5c;border-radius:12px;
+                padding:20px 24px;margin-bottom:16px'>
+      <div style='font-size:13px;color:#94a3b8;margin-bottom:4px'>
+        1–3 Year Price Outlook  ·  {ticker}
+      </div>
+      <div style='display:flex;align-items:center;gap:20px;flex-wrap:wrap'>
+        <div>
+          <div style='font-size:11px;color:#718096'>Current Price</div>
+          <div style='font-size:22px;font-weight:800;color:#fff'>
+            {fmt_currency(cp, native_ccy, disp_ccy, rates)}
+          </div>
+        </div>
+        <div style='font-size:24px;color:#718096'>→</div>
+        <div>
+          <div style='font-size:11px;color:#718096'>Consensus Target</div>
+          <div style='font-size:22px;font-weight:800;color:#e2e8f0'>{consensus_str}</div>
+          <div style='font-size:12px;color:{"#00C853" if pred["upside_mid"]>=0 else "#EF5350"}'>
+            {"▲" if pred["upside_mid"]>=0 else "▼"} {abs(pred["upside_mid"]):.1%} implied
+            {"upside" if pred["upside_mid"]>=0 else "downside"}
+          </div>
+        </div>
+        <div>
+          <div style='font-size:11px;color:#718096'>Range (Low – High)</div>
+          <div style='font-size:16px;font-weight:600;color:#94a3b8'>
+            {low_str} – {high_str}
+          </div>
+        </div>
+        <div>
+          <div style='font-size:11px;color:#718096'>Overall Outlook</div>
+          <div style='font-size:16px;font-weight:700;color:{outlook_color}'>{outlook_label}</div>
+        </div>
+      </div>
+    </div>""", unsafe_allow_html=True)
+
+    # ── Target breakdown chart ────────────────────────────────────────────────
+    if pred["targets"]:
+        labels = [t[0] for t in pred["targets"]]
+        values = [t[1] for t in pred["targets"]]
+        colors = [t[2] for t in pred["targets"]]
+        upsides = [(v - cp) / cp * 100 for v in values]
+
+        fig = go.Figure()
+        # Horizontal bars showing target vs current price
+        fig.add_trace(go.Bar(
+            x=upsides, y=labels, orientation="h",
+            marker_color=colors,
+            text=[f"{fmt_currency(v, native_ccy, disp_ccy, rates)}  ({u:+.1f}%)"
+                  for v, u in zip(values, upsides)],
+            textposition="outside",
+            textfont=dict(size=11),
+        ))
+        fig.add_vline(x=0, line=dict(color="white", width=2))
+        fig.add_vline(x=-20, line=dict(color="#EF5350", width=1, dash="dash"),
+                      annotation_text="-20%", annotation_font_size=10)
+        fig.add_vline(x=20,  line=dict(color="#00C853", width=1, dash="dash"),
+                      annotation_text="+20%", annotation_font_size=10)
+        fig.update_layout(
+            title=dict(text=f"Price Targets vs Current ({fmt_currency(cp, native_ccy, disp_ccy, rates)})",
+                       font_size=13, x=0.01),
+            height=max(300, len(labels)*55 + 80),
+            template="plotly_dark",
+            margin=dict(l=200, r=120, t=50, b=40),
+            paper_bgcolor="#0e1117", plot_bgcolor="#1a1d2e",
+            xaxis=dict(ticksuffix="%", showgrid=True,
+                       gridcolor="rgba(255,255,255,0.06)", tickfont=dict(size=11)),
+            yaxis=dict(tickfont=dict(size=11)),
+            showlegend=False,
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+    # ── Methodology breakdown ────────────────────────────────────────────────
+    st.markdown(section_header("📐 How this prediction is built"), unsafe_allow_html=True)
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown("**Inputs used:**")
+        inputs = []
+        if pred.get("dcf_values"):
+            inputs.append(f"✅ DCF Models ({len(pred['dcf_values'])} models, range: "
+                          f"{fmt_currency(min(pred['dcf_values']), native_ccy, disp_ccy, rates)} – "
+                          f"{fmt_currency(max(pred['dcf_values']), native_ccy, disp_ccy, rates)})")
+        if pred.get("analyst_target"):
+            inputs.append(f"✅ Analyst consensus target: "
+                          f"{fmt_currency(pred['analyst_target'], native_ccy, disp_ccy, rates)} "
+                          f"({sentiment.get('num_analysts',0)} analysts)")
+        feps = info.get("forwardEps")
+        if feps:
+            inputs.append(f"✅ Forward EPS: ${feps:.2f} × Forward P/E model")
+        for item in inputs:
+            st.markdown(f"<div style='font-size:12px;color:#c6f6d5;padding:2px 0'>{item}</div>",
+                        unsafe_allow_html=True)
+
+    with c2:
+        st.markdown("**Supporting signals:**")
+        sc = scoring.get("scores", {})
+        signals_list = [
+            (f"Composite Score: {scoring.get('composite',0):.1f}/10 — {scoring.get('signal','')}", scoring.get("composite",5) >= 5),
+            (f"Fundamental Score: {sc.get('fundamental',0):.1f}/10", sc.get("fundamental",5) >= 5),
+            (f"Valuation Score: {sc.get('valuation',0):.1f}/10", sc.get("valuation",5) >= 5),
+            (f"Technical Score: {sc.get('technical',0):.1f}/10", sc.get("technical",5) >= 5),
+            (f"Sentiment Score: {sc.get('sentiment',0):.1f}/10", sc.get("sentiment",5) >= 5),
+        ]
+        for lbl, positive in signals_list:
+            icon = "✅" if positive else "🔴"
+            st.markdown(f"<div style='font-size:12px;padding:2px 0'>{icon} {lbl}</div>",
+                        unsafe_allow_html=True)
+
+    st.markdown("""
+    > ⚠️ **Disclaimer:** This prediction combines quantitative models and analyst estimates.
+    > It is for informational purposes only and does not constitute financial advice.
+    > Actual stock prices may differ materially from these estimates.
+    > Always do your own due diligence.
+    """)
 
 # ─── Summary Dashboard ───────────────────────────────────────────────────────
 
@@ -1453,6 +1822,21 @@ def render_deploy_guide():
 # ─── Main ────────────────────────────────────────────────────────────────────
 
 def main():
+    # ── Process pending ticker additions BEFORE any widgets render ────────────
+    pending = st.session_state.pop("pending_add_ticker", None)
+    if pending:
+        slots = st.session_state.get("ticker_slots", ["","","","",""])
+        if pending not in slots:
+            for si in range(5):
+                if not slots[si]:
+                    slots[si] = pending
+                    st.session_state["ticker_slots"] = slots
+                    # Also set widget key so text_input shows it on this run
+                    if f"t{si}" not in st.session_state:
+                        st.session_state[f"t{si}"] = pending
+                    break
+        # Don't rerun — let the page render with updated slots naturally
+
     with st.sidebar:
         st.markdown("# 📈 Stock Analyzer")
         st.markdown("---")
