@@ -10,6 +10,7 @@ import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import datetime
+import urllib.parse
 from PIL import Image
 
 from data                import (fetch_ticker_data, fetch_risk_free_rate,
