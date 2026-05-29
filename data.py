@@ -86,31 +86,19 @@ def _fetch_ticker_data_impl(ticker: str) -> dict:
 
         # Stagger requests to avoid hammering Yahoo Finance
         hist_2y = _retry(lambda: stock.history(period="2y"), label=f"{ticker}/hist_2y")
-        time.sleep(0.3)
         hist_5y = _retry(lambda: stock.history(period="5y"), label=f"{ticker}/hist_5y")
-        time.sleep(0.3)
 
         income_stmt   = _safe_get_retry(stock, "income_stmt",   ticker)
-        time.sleep(0.2)
         balance_sheet = _safe_get_retry(stock, "balance_sheet", ticker)
-        time.sleep(0.2)
         cash_flow     = _safe_get_retry(stock, "cashflow",      ticker)
-        time.sleep(0.2)
         q_income      = _safe_get_retry(stock, "quarterly_income_stmt",   ticker)
-        time.sleep(0.2)
         q_balance     = _safe_get_retry(stock, "quarterly_balance_sheet", ticker)
-        time.sleep(0.2)
         q_cashflow    = _safe_get_retry(stock, "quarterly_cashflow",      ticker)
-        time.sleep(0.2)
 
         recommendations  = _safe_get_retry(stock, "recommendations",   ticker)
-        time.sleep(0.2)
         analyst_targets  = _safe_get_retry(stock, "analyst_price_targets", ticker)
-        time.sleep(0.2)
         earnings_history = _safe_get_retry(stock, "earnings_history",  ticker)
-        time.sleep(0.2)
         institutional    = _safe_get_retry(stock, "institutional_holders", ticker)
-        time.sleep(0.2)
 
         # Earnings dates
         earnings_dates = pd.DataFrame()
@@ -223,15 +211,13 @@ def fetch_sp500() -> pd.DataFrame:
 def fetch_peer_metrics(tickers_tuple: tuple) -> dict:
     """
     Fetch valuation metrics for peer list.
-    Staggered with delays + retry to avoid rate limiting.
+    Capped at 6 peers, 0.3s stagger to keep it fast.
     """
     result = {}
-    for i, t in enumerate(tickers_tuple):
-        # Progressive delay: every 3 tickers, pause a bit longer
-        if i > 0 and i % 3 == 0:
-            time.sleep(1.0)
-        else:
-            time.sleep(0.4)
+    # Cap at 6 peers to bound the time (6 × ~1s = ~6s max)
+    for i, t in enumerate(tickers_tuple[:6]):
+        if i > 0:
+            time.sleep(0.3)
         try:
             info = _retry(lambda ticker=t: yf.Ticker(ticker).info, label=t)
             price = info.get("currentPrice") or info.get("regularMarketPrice") or 0

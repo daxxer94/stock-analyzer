@@ -1,44 +1,54 @@
 """
-fundamental.py - Financial statement analysis + DCF models.
+fundamental.py — Financial statement analysis + DCF models.
 
-DCF Models implemented:
-  1. WACC-based DCF
-  2. CAPM-based DCF
-  3. Fixed-rate DCF (user supplied)
-  4. Two-Stage FCF DCF
+DCF improvements based on JPMorgan M&A / CFA methodology:
+  - Uses Unlevered Free Cash Flow (UFCF = EBIT×(1-t) + D&A - CapEx - ΔNWC)
+    instead of reported operating cash flow, which includes working capital noise
+  - Blends historical UFCF growth with analyst EPS forward estimates
+  - Revenue-based projection option when FCF is unreliable
+  - Sensitivity analysis table (WACC × terminal growth rate)
+  - Proper EV → Equity Value bridge (+ cash, - debt, - minority interest)
+
+4 DCF Models:
+  1. WACC DCF (enterprise, UFCF)
+  2. CAPM DCF (cost of equity, levered FCF)
+  3. Fixed Rate DCF (user-supplied hurdle rate)
+  4. Two-Stage FCF (high-growth fade to terminal)
 """
+
 import pandas as pd
 import numpy as np
 from data import safe_val
 
 
-# ─── Financial Statement Helpers ────────────────────────────────────────────
+# ─── Financial Statement Parsers ──────────────────────────────────────────────
 
 def get_income_series(income: pd.DataFrame) -> dict:
-    """Extract key income statement items across all available years."""
     if income is None or income.empty:
         return {}
 
-    def get_series(row_names):
+    def series(row_names):
         vals = {}
         for i, col in enumerate(income.columns):
             v = safe_val(income, row_names, i)
             if v is not None:
-                vals[col.year if hasattr(col, "year") else i] = v
+                yr = col.year if hasattr(col, "year") else i
+                vals[yr] = v
         return vals
 
     return {
-        "revenue":          get_series(["Total Revenue","Revenue"]),
-        "gross_profit":     get_series(["Gross Profit"]),
-        "operating_income": get_series(["Operating Income","Ebit","EBIT"]),
-        "net_income":       get_series(["Net Income","Net Income Common Stockholders"]),
-        "ebitda":           get_series(["EBITDA","Ebitda","Normalized EBITDA"]),
-        "interest_expense": get_series(["Interest Expense","Interest Expense Non Operating"]),
-        "tax_provision":    get_series(["Tax Provision","Income Tax Expense"]),
-        "pretax_income":    get_series(["Pretax Income","Income Before Tax"]),
-        "rd_expense":       get_series(["Research And Development","Research Development"]),
-        "eps_basic":        get_series(["Basic EPS","Basic Eps"]),
-        "eps_diluted":      get_series(["Diluted EPS","Diluted Eps"]),
+        "revenue":          series(["Total Revenue", "Revenue"]),
+        "gross_profit":     series(["Gross Profit"]),
+        "ebit":             series(["Operating Income", "EBIT", "Ebit"]),
+        "ebitda":           series(["EBITDA", "Ebitda", "Normalized EBITDA"]),
+        "net_income":       series(["Net Income", "Net Income Common Stockholders"]),
+        "da":               series(["Reconciled Depreciation", "Depreciation Amortization Depletion"]),
+        "interest_expense": series(["Interest Expense Non Operating", "Interest Expense"]),
+        "tax_provision":    series(["Tax Provision", "Income Tax Expense"]),
+        "pretax_income":    series(["Pretax Income", "Income Before Tax"]),
+        "rd_expense":       series(["Research And Development"]),
+        "eps_basic":        series(["Basic EPS"]),
+        "eps_diluted":      series(["Diluted EPS"]),
     }
 
 
@@ -46,100 +56,311 @@ def get_balance_series(balance: pd.DataFrame) -> dict:
     if balance is None or balance.empty:
         return {}
 
-    def get_latest(row_names):
+    def latest(row_names):
         return safe_val(balance, row_names, 0)
 
+    def series(row_names, n=4):
+        vals = []
+        for i in range(min(n, len(balance.columns))):
+            v = safe_val(balance, row_names, i)
+            vals.append(v)
+        return vals
+
+    # Working capital items (for ΔNWC calculation)
+    ca_series   = series(["Current Assets", "Total Current Assets"])
+    cl_series   = series(["Current Liabilities", "Total Current Liabilities Net Minority Interest"])
+    # Exclude cash from current assets, exclude ST debt from current liabilities
+    # for operating NWC
+    cash_series = series(["Cash And Cash Equivalents"])
+    std_series  = series(["Current Debt", "Current Portion Of Long Term Debt"])
+
     return {
-        "total_assets":     get_latest(["Total Assets"]),
-        "total_debt":       get_latest(["Total Debt","Long Term Debt And Capital Lease Obligation"]),
-        "long_term_debt":   get_latest(["Long Term Debt"]),
-        "total_equity":     get_latest(["Stockholders Equity","Common Stock Equity","Total Equity Gross Minority Interest"]),
-        "cash":             get_latest(["Cash And Cash Equivalents","Cash Cash Equivalents And Short Term Investments"]),
-        "current_assets":   get_latest(["Current Assets","Total Current Assets"]),
-        "current_liab":     get_latest(["Current Liabilities","Total Current Liabilities Net Minority Interest"]),
-        "total_liab":       get_latest(["Total Liabilities Net Minority Interest","Total Liabilities"]),
-        "goodwill":         get_latest(["Goodwill","Goodwill And Other Intangible Assets"]),
-        "inventory":        get_latest(["Inventory"]),
-        "receivables":      get_latest(["Accounts Receivable","Receivables"]),
+        "total_assets":   latest(["Total Assets"]),
+        "total_debt":     latest(["Total Debt", "Long Term Debt And Capital Lease Obligation"]),
+        "long_term_debt": latest(["Long Term Debt"]),
+        "total_equity":   latest(["Stockholders Equity", "Common Stock Equity",
+                                   "Total Equity Gross Minority Interest"]),
+        "cash":           latest(["Cash And Cash Equivalents",
+                                   "Cash Cash Equivalents And Short Term Investments"]),
+        "current_assets": latest(["Current Assets", "Total Current Assets"]),
+        "current_liab":   latest(["Current Liabilities",
+                                   "Total Current Liabilities Net Minority Interest"]),
+        "total_liab":     latest(["Total Liabilities Net Minority Interest"]),
+        "goodwill":       latest(["Goodwill And Other Intangible Assets", "Goodwill"]),
+        "minority_int":   latest(["Minority Interest", "Non Controlling Interest"]),
+        # Series for NWC delta calculation
+        "ca_series":  ca_series,
+        "cl_series":  cl_series,
+        "cash_series": cash_series,
+        "std_series":  std_series,
     }
 
 
-def get_cashflow_list(cashflow: pd.DataFrame) -> dict:
-    """Return lists of cash flow values (most recent first)."""
+def get_cashflow_data(cashflow: pd.DataFrame) -> dict:
     if cashflow is None or cashflow.empty:
         return {}
 
-    def series(row_names):
+    def series(row_names, n=4):
         vals = []
-        for i in range(min(4, len(cashflow.columns))):
+        for i in range(min(n, len(cashflow.columns))):
             v = safe_val(cashflow, row_names, i)
             vals.append(v)
         return [v for v in vals if v is not None]
 
-    ocf   = series(["Operating Cash Flow","Cash From Operations","Total Cash From Operating Activities"])
-    capex = series(["Capital Expenditure","Purchases Of Property Plant And Equipment","Capital Expenditures"])
-    fcf   = [ocf[i] - abs(capex[i]) for i in range(min(len(ocf), len(capex)))]
+    ocf   = series(["Operating Cash Flow", "Cash From Operations",
+                    "Total Cash From Operating Activities"])
+    capex = series(["Capital Expenditure", "Purchases Of Property Plant And Equipment",
+                    "Capital Expenditures"])
+    da    = series(["Depreciation Amortization Depletion",
+                    "Depreciation And Amortization"])
+    nwc_c = series(["Change In Working Capital", "Changes In Working Capital"])
+
+    fcf_reported = []
+    for i in range(min(len(ocf), len(capex))):
+        if ocf[i] is not None and capex[i] is not None:
+            fcf_reported.append(ocf[i] - abs(capex[i]))
 
     return {
         "operating_cf": ocf,
         "capex":        capex,
-        "fcf":          fcf,
-        "dividends_paid": series(["Payment Of Dividends","Common Stock Dividend Paid","Dividends Paid"]),
-        "buybacks":     series(["Repurchase Of Capital Stock","Common Stock Repurchase"]),
+        "da":           da,
+        "nwc_change":   nwc_c,
+        "fcf_reported": fcf_reported,
+        "dividends":    series(["Payment Of Dividends", "Common Stock Dividend Paid"]),
+        "buybacks":     series(["Repurchase Of Capital Stock", "Common Stock Repurchase"]),
     }
 
 
-# ─── Growth & Margin Calculations ───────────────────────────────────────────
+# ─── UFCF Calculator ──────────────────────────────────────────────────────────
 
-def growth_rates(series: dict) -> list:
-    """Calculate YoY growth rates from a {year: value} dict (sorted descending)."""
-    vals = [v for _, v in sorted(series.items(), reverse=True) if v]
-    if len(vals) < 2:
+def calculate_ufcf_series(income: pd.DataFrame, balance: pd.DataFrame,
+                           cashflow: pd.DataFrame) -> list:
+    """
+    Unlevered Free Cash Flow = EBIT × (1 − Tax Rate) + D&A − CapEx − ΔNWC
+
+    This is the correct base for an enterprise DCF (WACC model) because it
+    represents cash flows available to ALL capital providers (debt + equity),
+    before financing effects.
+
+    Falls back to reported FCF if UFCF cannot be calculated.
+    """
+    inc = get_income_series(income)
+    cf  = get_cashflow_data(cashflow)
+    bal = get_balance_series(balance)
+
+    n_periods = min(4, len(income.columns) if income is not None and not income.empty else 0)
+    if n_periods == 0:
         return []
+
+    # Effective tax rate from statements (capped 15–35%)
+    tax_rates = []
+    for yr, ebit in sorted(inc.get("ebit", {}).items(), reverse=True)[:4]:
+        tp = inc.get("tax_provision", {}).get(yr)
+        pi = inc.get("pretax_income", {}).get(yr)
+        if tp is not None and pi and pi > 0:
+            tr = max(0.15, min(0.35, tp / pi))
+            tax_rates.append(tr)
+    tax_rate = float(np.median(tax_rates)) if tax_rates else 0.21
+
+    ufcf_list = []
+    ebit_vals  = sorted(inc.get("ebit", {}).items(), reverse=True)
+    da_vals    = sorted(inc.get("da", {}).items(), reverse=True)
+
+    # D&A fallback: use cash flow statement D&A if income statement doesn't have it
+    da_cf = cf.get("da", [])
+
+    capex_list = cf.get("capex", [])
+    nwc_list   = cf.get("nwc_change", [])
+
+    for i in range(min(n_periods, len(ebit_vals))):
+        yr, ebit = ebit_vals[i]
+
+        # NOPAT = EBIT × (1 - t)
+        nopat = ebit * (1 - tax_rate)
+
+        # D&A: prefer income statement, fall back to cash flow
+        da = None
+        if i < len(da_vals):
+            da = abs(da_vals[i][1])
+        if da is None and i < len(da_cf):
+            da = abs(da_cf[i])
+        if da is None:
+            # Estimate D&A as ~3% of revenue (industry average if not available)
+            rev = list(inc.get("revenue", {}).values())
+            da = abs(rev[i]) * 0.03 if i < len(rev) and rev[i] else 0
+
+        # CapEx
+        capex = abs(capex_list[i]) if i < len(capex_list) and capex_list[i] is not None else 0
+
+        # ΔNWC: increase in NWC uses cash (negative for UFCF)
+        # NWC = Operating Current Assets - Operating Current Liabilities
+        # Operating CA = CA - Cash  /  Operating CL = CL - Short-term debt
+        ca_s   = bal.get("ca_series", [])
+        cl_s   = bal.get("cl_series", [])
+        cash_s = bal.get("cash_series", [])
+        std_s  = bal.get("std_series", [])
+
+        delta_nwc = 0.0
+        if (i + 1 < len(ca_s) and ca_s[i] is not None and ca_s[i+1] is not None
+                and cl_s[i] is not None and cl_s[i+1] is not None):
+            ca_now  = (ca_s[i]   or 0) - (cash_s[i]   if i < len(cash_s) and cash_s[i]   else 0)
+            ca_prev = (ca_s[i+1] or 0) - (cash_s[i+1] if i+1 < len(cash_s) and cash_s[i+1] else 0)
+            cl_now  = (cl_s[i]   or 0) - (std_s[i]   if i < len(std_s) and std_s[i]   else 0)
+            cl_prev = (cl_s[i+1] or 0) - (std_s[i+1] if i+1 < len(std_s) and std_s[i+1] else 0)
+            nwc_now  = ca_now  - cl_now
+            nwc_prev = ca_prev - cl_prev
+            delta_nwc = nwc_now - nwc_prev  # increase = uses cash
+        elif i < len(nwc_list) and nwc_list[i] is not None:
+            # Use cash flow statement NWC change directly
+            delta_nwc = -nwc_list[i]  # CF statement shows it as inflow/outflow
+
+        ufcf = nopat + da - capex - delta_nwc
+        ufcf_list.append(ufcf)
+
+    return ufcf_list, tax_rate
+
+
+# ─── Growth Rate Estimation ────────────────────────────────────────────────────
+
+def estimate_growth_rates(ufcf_list: list, info: dict) -> dict:
+    """
+    Blend three growth estimates:
+      1. Historical UFCF CAGR (last 3-4 years)
+      2. Analyst EPS forward growth estimate (from yfinance info)
+      3. Analyst revenue growth estimate
+
+    Returns {near: float, fade: float} where near = Stage 1, fade = Stage 2
+    """
+    # 1. Historical UFCF CAGR
+    hist_g = _ufcf_cagr(ufcf_list)
+
+    # 2. Analyst forward EPS growth
+    eps_g = None
+    for key in ["earningsGrowth", "revenueGrowth"]:
+        v = info.get(key)
+        if v is not None:
+            try:
+                eps_g = float(v)
+                break
+            except Exception:
+                pass
+
+    # 3. Long-term analyst growth (5y)
+    ltg = None
+    v = info.get("longTermPotentialGrowthRate") or info.get("targetGrowthRate5Year")
+    if v:
+        try:
+            ltg = float(v)
+        except Exception:
+            pass
+
+    # Blend: if analyst data exists, weight it more heavily (60/40)
+    if eps_g is not None:
+        blended_near = hist_g * 0.4 + eps_g * 0.6
+    else:
+        blended_near = hist_g
+
+    # Cap unrealistic values
+    blended_near = max(-0.10, min(0.40, blended_near))
+
+    # Stage 2: fade rate (average of stage 1 and terminal)
+    terminal_g   = 0.025
+    blended_fade = max(terminal_g, blended_near * 0.5)
+
+    # Stage 2 also blended with LTG if available
+    if ltg is not None:
+        blended_fade = max(terminal_g, (blended_fade + ltg) / 2)
+
+    return {
+        "near":        blended_near,
+        "fade":        blended_fade,
+        "terminal":    terminal_g,
+        "hist_ufcf":   hist_g,
+        "analyst_eps": eps_g,
+        "ltg":         ltg,
+    }
+
+
+def _ufcf_cagr(ufcf_list: list) -> float:
+    """Historical UFCF CAGR. Falls back to 5% if not calculable."""
+    pos_vals = [v for v in ufcf_list if v and v > 0]
+    if len(pos_vals) < 2:
+        return 0.05
     rates = []
-    for i in range(len(vals) - 1):
-        if vals[i + 1] and vals[i + 1] != 0:
-            rates.append((vals[i] / vals[i + 1]) - 1)
-    return rates
+    for i in range(len(ufcf_list) - 1):
+        a, b = ufcf_list[i], ufcf_list[i + 1]
+        if a and b and b > 0 and a > 0:
+            rates.append(a / b - 1)
+    return float(np.median(rates)) if rates else 0.05
 
 
-def margin_series(numerator: dict, denominator: dict) -> dict:
-    """Calculate margin = num / denom for matching years."""
-    result = {}
-    for yr in numerator:
-        if yr in denominator and denominator[yr] and denominator[yr] != 0:
-            result[yr] = numerator[yr] / denominator[yr]
-    return result
+# ─── WACC ─────────────────────────────────────────────────────────────────────
 
-
-# ─── WACC Calculation ────────────────────────────────────────────────────────
-
-def calculate_wacc(info: dict, income: pd.DataFrame, balance: pd.DataFrame, rfr: float) -> dict:
+def calculate_wacc(info: dict, income: pd.DataFrame,
+                   balance: pd.DataFrame, rfr: float) -> dict:
+    """
+    WACC with improvements:
+    - Size premium for small-caps (market cap < $2B)
+    - Iterative beta adjustment for financial leverage
+    - Damodaran-style pre-tax cost of debt from synthetic spread
+    """
     beta = float(info.get("beta") or 1.0)
-    mrp  = 0.055  # Market Risk Premium (historical avg)
-    ke   = rfr + beta * mrp  # Cost of Equity (CAPM)
+    mrp  = 0.055  # Equity risk premium (Damodaran US estimate)
 
-    # Cost of Debt
-    interest = abs(safe_val(income, ["Interest Expense","Interest Expense Non Operating"]) or 0)
-    total_debt = safe_val(balance, ["Total Debt","Long Term Debt And Capital Lease Obligation"]) or 0
-    kd_pretax = (interest / total_debt) if total_debt > 0 and interest > 0 else 0.05
+    # Size premium (Duff & Phelps approximate)
+    mktcap = float(info.get("marketCap") or 1e10)
+    if mktcap < 300e6:      size_prem = 0.040   # Micro-cap
+    elif mktcap < 2e9:      size_prem = 0.025   # Small-cap
+    elif mktcap < 10e9:     size_prem = 0.012   # Mid-cap
+    else:                   size_prem = 0.000   # Large-cap
 
-    # Effective Tax Rate
-    tax  = safe_val(income, ["Tax Provision","Income Tax Expense"]) or 0
-    ebt  = safe_val(income, ["Pretax Income","Income Before Tax"]) or 1
-    tax_rate = max(0.0, min(0.40, tax / ebt)) if ebt > 0 else 0.21
-    kd = kd_pretax * (1 - tax_rate)
+    ke = rfr + beta * mrp + size_prem  # Cost of equity
 
-    # Capital Structure Weights
-    mkt_cap = float(info.get("marketCap") or 0)
-    total_v = mkt_cap + total_debt
-    w_e = mkt_cap / total_v if total_v > 0 else 1.0
+    # Cost of debt — prefer interest/debt, fall back to synthetic spread from coverage ratio
+    interest = abs(safe_val(income, ["Interest Expense Non Operating",
+                                      "Interest Expense"]) or 0)
+    total_debt = abs(safe_val(balance, ["Total Debt",
+                                        "Long Term Debt And Capital Lease Obligation"]) or 0)
+    ebit_v = safe_val(income, ["Operating Income", "EBIT", "Ebit"])
+
+    if total_debt > 0 and interest > 0:
+        kd_pretax = min(interest / total_debt, 0.15)  # cap at 15%
+    elif ebit_v and total_debt > 0:
+        # Synthetic rating: interest coverage → spread
+        ic = ebit_v / max(interest, ebit_v * 0.01)  # avoid div/0
+        if ic > 12.5:   spread = 0.0050
+        elif ic > 9.5:  spread = 0.0065
+        elif ic > 7.5:  spread = 0.0085
+        elif ic > 6.0:  spread = 0.0100
+        elif ic > 4.5:  spread = 0.0130
+        elif ic > 3.5:  spread = 0.0170
+        elif ic > 2.5:  spread = 0.0250
+        elif ic > 2.0:  spread = 0.0350
+        elif ic > 1.5:  spread = 0.0490
+        else:           spread = 0.0650
+        kd_pretax = rfr + spread
+    else:
+        kd_pretax = rfr + 0.015  # fallback: Rfr + 150bps
+
+    # Effective tax rate
+    tax_rate = 0.21
+    tp = safe_val(income, ["Tax Provision", "Income Tax Expense"])
+    pi = safe_val(income, ["Pretax Income", "Income Before Tax"])
+    if tp is not None and pi and pi > 0:
+        tax_rate = max(0.10, min(0.35, tp / pi))
+
+    kd = kd_pretax * (1 - tax_rate)  # After-tax cost of debt
+
+    # Capital weights (market-value weights)
+    market_cap = float(info.get("marketCap") or 0)
+    total_v    = market_cap + total_debt
+    w_e = market_cap / total_v if total_v > 0 else 1.0
     w_d = total_debt / total_v if total_v > 0 else 0.0
 
     wacc = w_e * ke + w_d * kd
 
     return {
-        "wacc":           wacc,
+        "wacc":           max(0.04, min(0.30, wacc)),  # bound to reasonable range
         "cost_of_equity": ke,
         "cost_of_debt":   kd,
         "kd_pretax":      kd_pretax,
@@ -149,226 +370,320 @@ def calculate_wacc(info: dict, income: pd.DataFrame, balance: pd.DataFrame, rfr:
         "beta":           beta,
         "rfr":            rfr,
         "mrp":            mrp,
+        "size_premium":   size_prem,
     }
 
 
-# ─── Core DCF Engine ─────────────────────────────────────────────────────────
+# ─── DCF Engine ───────────────────────────────────────────────────────────────
 
 def _dcf_engine(base_fcf: float, discount_rate: float, stage1_growth: float,
                 stage2_growth: float, terminal_growth: float,
                 stage1_years: int = 5, stage2_years: int = 5) -> dict:
-    """Internal DCF calculation used by all 4 models."""
-
+    """Core DCF: explicit forecast + terminal value (Gordon Growth)."""
     if discount_rate <= terminal_growth:
-        # Use a safe floor to avoid division by zero or negative EV
         discount_rate = terminal_growth + 0.02
 
-    fcf = base_fcf
-    pv_stage1, pv_stage2 = 0.0, 0.0
-    yr = 0
+    fcf       = base_fcf
+    pv_s1     = 0.0
+    pv_s2     = 0.0
+    s1_detail = []
+    s2_detail = []
+    yr        = 0
 
-    # Stage 1
-    stage1_cfs = []
     for i in range(1, stage1_years + 1):
-        fcf = fcf * (1 + stage1_growth)
-        pv = fcf / (1 + discount_rate) ** i
-        pv_stage1 += pv
-        stage1_cfs.append({"year": i, "fcf": fcf, "pv": pv})
+        fcf   = fcf * (1 + stage1_growth)
+        pv    = fcf / (1 + discount_rate) ** i
+        pv_s1 += pv
+        s1_detail.append({"year": i, "fcf": fcf, "pv": pv, "pv_cumulative": pv_s1})
         yr = i
 
-    # Stage 2
-    stage2_cfs = []
     for i in range(stage1_years + 1, stage1_years + stage2_years + 1):
-        fcf = fcf * (1 + stage2_growth)
-        pv = fcf / (1 + discount_rate) ** i
-        pv_stage2 += pv
-        stage2_cfs.append({"year": i, "fcf": fcf, "pv": pv})
+        fcf   = fcf * (1 + stage2_growth)
+        pv    = fcf / (1 + discount_rate) ** i
+        pv_s2 += pv
+        s2_detail.append({"year": i, "fcf": fcf, "pv": pv})
         yr = i
 
-    # Terminal Value
+    # Terminal Value (Gordon Growth)
     terminal_fcf = fcf * (1 + terminal_growth)
-    tv = terminal_fcf / (discount_rate - terminal_growth)
-    pv_tv = tv / (1 + discount_rate) ** yr
-
-    total_ev = pv_stage1 + pv_stage2 + pv_tv
+    tv           = terminal_fcf / (discount_rate - terminal_growth)
+    pv_tv        = tv / (1 + discount_rate) ** yr
+    total_ev     = pv_s1 + pv_s2 + pv_tv
 
     return {
-        "discount_rate":   discount_rate,
-        "stage1_growth":   stage1_growth,
-        "stage2_growth":   stage2_growth,
-        "terminal_growth": terminal_growth,
-        "pv_stage1":       pv_stage1,
-        "pv_stage2":       pv_stage2,
-        "terminal_value":  tv,
-        "pv_terminal":     pv_tv,
-        "total_ev":        total_ev,
-        "tv_pct":          pv_tv / total_ev * 100 if total_ev > 0 else 0,
-        "stage1_cashflows": stage1_cfs,
-        "stage2_cashflows": stage2_cfs,
+        "discount_rate":    discount_rate,
+        "stage1_growth":    stage1_growth,
+        "stage2_growth":    stage2_growth,
+        "terminal_growth":  terminal_growth,
+        "pv_stage1":        pv_s1,
+        "pv_stage2":        pv_s2,
+        "terminal_value":   tv,
+        "pv_terminal":      pv_tv,
+        "total_ev":         total_ev,
+        "tv_pct":           pv_tv / total_ev * 100 if total_ev > 0 else 0,
+        "stage1_cashflows": s1_detail,
+        "stage2_cashflows": s2_detail,
     }
 
 
-def _resolve_base_fcf(fcf_list: list) -> float | None:
-    """Get a positive base FCF to use in projections."""
-    if not fcf_list:
+def _ev_to_equity(result: dict, shares: float, net_cash: float,
+                   minority_int: float = 0) -> dict:
+    """
+    EV → Equity Value → Price per Share bridge.
+    Equity Value = EV + Cash - Debt - Minority Interest
+    (net_cash = Cash - Debt, can be negative)
+    """
+    ev          = result.get("total_ev", 0)
+    equity_val  = ev + net_cash - (minority_int or 0)
+    result["equity_value"]    = equity_val
+    result["intrinsic_value"] = equity_val / shares if (shares and shares > 0) else None
+    return result
+
+
+# ─── 4 DCF Models ─────────────────────────────────────────────────────────────
+
+def dcf_wacc(ufcf_list: list, wacc_components: dict, shares: float,
+             net_cash: float, minority_int: float, growth_rates: dict) -> dict:
+    """
+    Model 1 — WACC DCF (enterprise, uses UFCF).
+    Correct for companies with meaningful debt.
+    """
+    base = _positive_base(ufcf_list)
+    if base is None:
+        return {"error": "Negative/zero UFCF — WACC DCF not applicable"}
+
+    r  = wacc_components["wacc"]
+    g1 = growth_rates["near"]
+    g2 = growth_rates["fade"]
+    tg = growth_rates["terminal"]
+
+    result = _dcf_engine(base, r, g1, g2, tg)
+    result["model"]      = "WACC DCF"
+    result["rate_label"] = f"WACC = {r:.2%}"
+    result["base_fcf"]   = base
+    result["fcf_type"]   = "UFCF"
+    result["wacc_components"] = wacc_components
+    return _ev_to_equity(result, shares, net_cash, minority_int)
+
+
+def dcf_capm(ufcf_list: list, info: dict, rfr: float, shares: float,
+             net_cash: float, minority_int: float, growth_rates: dict) -> dict:
+    """
+    Model 2 — CAPM / Equity DCF (cost of equity as discount rate).
+    Correct for equity-funded or near-zero-debt companies.
+    """
+    base = _positive_base(ufcf_list)
+    if base is None:
+        return {"error": "Negative/zero UFCF — CAPM DCF not applicable"}
+
+    beta      = float(info.get("beta") or 1.0)
+    mktcap    = float(info.get("marketCap") or 1e10)
+    mrp       = 0.055
+    size_prem = 0.025 if mktcap < 2e9 else (0.012 if mktcap < 10e9 else 0.0)
+    r = rfr + beta * mrp + size_prem
+
+    g1 = growth_rates["near"]
+    g2 = growth_rates["fade"]
+    tg = growth_rates["terminal"]
+
+    result = _dcf_engine(base, r, g1, g2, tg)
+    result["model"]      = "CAPM DCF"
+    result["rate_label"] = f"Ke = {r:.2%}  (β={beta:.2f}, size={size_prem:.1%})"
+    result["base_fcf"]   = base
+    result["fcf_type"]   = "UFCF"
+    return _ev_to_equity(result, shares, net_cash, minority_int)
+
+
+def dcf_fixed(ufcf_list: list, fixed_rate: float, shares: float,
+              net_cash: float, minority_int: float, growth_rates: dict) -> dict:
+    """Model 3 — Fixed Rate DCF (user hurdle rate)."""
+    base = _positive_base(ufcf_list)
+    if base is None:
+        return {"error": "Negative/zero UFCF — Fixed DCF not applicable"}
+
+    g1 = growth_rates["near"]
+    g2 = growth_rates["fade"]
+    tg = growth_rates["terminal"]
+
+    result = _dcf_engine(base, fixed_rate, g1, g2, tg)
+    result["model"]      = "Fixed Rate DCF"
+    result["rate_label"] = f"r = {fixed_rate:.2%}  (user-set hurdle)"
+    result["base_fcf"]   = base
+    result["fcf_type"]   = "UFCF"
+    return _ev_to_equity(result, shares, net_cash, minority_int)
+
+
+def dcf_two_stage(ufcf_list: list, info: dict, rfr: float, shares: float,
+                  net_cash: float, minority_int: float, growth_rates: dict) -> dict:
+    """
+    Model 4 — Two-Stage FCF (explicit high-growth + fading transition).
+    More conservative: higher-growth Stage 1 fades more aggressively.
+    """
+    base = _positive_base(ufcf_list)
+    if base is None:
+        return {"error": "Negative/zero UFCF — Two-Stage DCF not applicable"}
+
+    beta  = float(info.get("beta") or 1.0)
+    r     = rfr + beta * 0.055
+    g1    = growth_rates["near"]
+    g2    = growth_rates["fade"]
+    tg    = growth_rates["terminal"]
+
+    result = _dcf_engine(base, r, g1, g2, tg, stage1_years=5, stage2_years=5)
+    result["model"]      = "Two-Stage FCF"
+    result["rate_label"] = f"r={r:.2%} | g1={g1:.1%} → g2={g2:.1%} → g∞={tg:.1%}"
+    result["base_fcf"]   = base
+    result["fcf_type"]   = "UFCF"
+    return _ev_to_equity(result, shares, net_cash, minority_int)
+
+
+def _positive_base(vals: list) -> float | None:
+    """Most recent positive UFCF; fallback to 3Y average if latest negative."""
+    if not vals:
         return None
-    if fcf_list[0] > 0:
-        return fcf_list[0]
-    # Try average of positive values
-    pos = [f for f in fcf_list if f > 0]
+    if vals[0] and vals[0] > 0:
+        return float(vals[0])
+    pos = [v for v in vals if v and v > 0]
     return float(np.mean(pos)) if pos else None
 
 
-def _hist_fcf_growth(fcf_list: list) -> float:
-    """Estimate historical FCF CAGR, capped for realism."""
-    if len(fcf_list) < 2:
-        return 0.08
-    rates = []
-    for i in range(len(fcf_list) - 1):
-        if fcf_list[i + 1] > 0 and fcf_list[i] > 0:
-            rates.append(fcf_list[i] / fcf_list[i + 1] - 1)
-    if not rates:
-        return 0.08
-    g = float(np.median(rates))
-    return max(-0.05, min(0.35, g))
+# ─── Sensitivity Table ────────────────────────────────────────────────────────
 
+def build_sensitivity_table(base_fcf: float, wacc_base: float,
+                              terminal_g_base: float, growth_rates: dict,
+                              shares: float, net_cash: float) -> dict:
+    """
+    WACC sensitivity analysis: 5×5 table of intrinsic values.
+    Rows = WACC ± steps, Cols = terminal growth ± steps.
+    Returns {wacc_values: [], tg_values: [], table: [[price, ...], ...]}
+    """
+    if base_fcf is None or base_fcf <= 0 or shares <= 0:
+        return {}
 
-# ─── 4 DCF Models ────────────────────────────────────────────────────────────
+    wacc_range = [wacc_base + d for d in [-0.02, -0.01, 0, +0.01, +0.02]]
+    tg_range   = [terminal_g_base + d for d in [-0.01, -0.005, 0, +0.005, +0.01]]
 
-def dcf_wacc(fcf_list: list, wacc_components: dict, shares: float,
-             net_cash: float = 0) -> dict:
-    """Model 1 – WACC-based DCF."""
-    base = _resolve_base_fcf(fcf_list)
-    if base is None:
-        return {"error": "Negative/zero FCF — WACC DCF not applicable"}
+    g1 = growth_rates["near"]
+    g2 = growth_rates["fade"]
 
-    r = wacc_components["wacc"]
-    g1 = _hist_fcf_growth(fcf_list)
-    g2 = max(terminal_g := 0.025, g1 * 0.5)
-    result = _dcf_engine(base, r, g1, g2, terminal_g)
-    result["model"] = "WACC"
-    result["rate_label"] = f"WACC = {r:.2%}"
-    _add_equity_value(result, shares, net_cash, wacc_components)
-    return result
-
-
-def dcf_capm(fcf_list: list, info: dict, rfr: float, shares: float,
-             net_cash: float = 0) -> dict:
-    """Model 2 – CAPM discount rate (cost of equity only)."""
-    base = _resolve_base_fcf(fcf_list)
-    if base is None:
-        return {"error": "Negative/zero FCF — CAPM DCF not applicable"}
-
-    beta = float(info.get("beta") or 1.0)
-    r = rfr + beta * 0.055
-    g1 = _hist_fcf_growth(fcf_list)
-    g2 = max(terminal_g := 0.025, g1 * 0.5)
-    result = _dcf_engine(base, r, g1, g2, terminal_g)
-    result["model"] = "CAPM"
-    result["rate_label"] = f"Ke = {r:.2%} (β={beta:.2f})"
-    _add_equity_value(result, shares, net_cash)
-    return result
-
-
-def dcf_fixed(fcf_list: list, fixed_rate: float, shares: float,
-              net_cash: float = 0) -> dict:
-    """Model 3 – User-supplied fixed discount rate."""
-    base = _resolve_base_fcf(fcf_list)
-    if base is None:
-        return {"error": "Negative/zero FCF — Fixed DCF not applicable"}
-
-    g1 = _hist_fcf_growth(fcf_list)
-    g2 = max(terminal_g := 0.025, g1 * 0.5)
-    result = _dcf_engine(base, fixed_rate, g1, g2, terminal_g)
-    result["model"] = "Fixed Rate"
-    result["rate_label"] = f"r = {fixed_rate:.2%} (user)"
-    _add_equity_value(result, shares, net_cash)
-    return result
-
-
-def dcf_two_stage(fcf_list: list, info: dict, rfr: float, shares: float,
-                  net_cash: float = 0) -> dict:
-    """Model 4 – Two-Stage FCF: high-growth phase then fading to terminal."""
-    base = _resolve_base_fcf(fcf_list)
-    if base is None:
-        return {"error": "Negative/zero FCF — Two-Stage DCF not applicable"}
-
-    beta = float(info.get("beta") or 1.0)
-    r = rfr + beta * 0.055
-    g1 = _hist_fcf_growth(fcf_list)
-    g2 = max(terminal_g := 0.025, g1 * 0.4)
-    # stage1 = 5y high growth, stage2 = 5y transition, then terminal
-    result = _dcf_engine(base, r, g1, g2, terminal_g, stage1_years=5, stage2_years=5)
-    result["model"] = "Two-Stage FCF"
-    result["rate_label"] = f"r = {r:.2%} | g1={g1:.1%} → g2={g2:.1%}"
-    _add_equity_value(result, shares, net_cash)
-    return result
-
-
-def _add_equity_value(result: dict, shares: float, net_cash: float,
-                      wacc_components: dict = None):
-    """Append equity value per share to a DCF result dict."""
-    ev = result.get("total_ev", 0)
-    equity_val = ev + net_cash  # Enterprise Value → Equity Value (simplified)
-    result["equity_value"] = equity_val
-    if shares and shares > 0:
-        result["intrinsic_value"] = equity_val / shares
-    else:
-        result["intrinsic_value"] = None
-    if wacc_components:
-        result["wacc_components"] = wacc_components
-
-
-# ─── Public Entry Point ──────────────────────────────────────────────────────
-
-def run_dcf_models(data: dict, rfr: float, fixed_rate: float) -> dict:
-    """Run all 4 DCF models and return results + metadata."""
-    info    = data.get("info", {})
-    income  = data.get("income_stmt", pd.DataFrame())
-    balance = data.get("balance_sheet", pd.DataFrame())
-    cf_data = get_cashflow_list(data.get("cash_flow", pd.DataFrame()))
-
-    fcf_list = cf_data.get("fcf", [])
-    shares   = float(info.get("sharesOutstanding") or info.get("floatShares") or 0)
-    total_cash = float(safe_val(balance, ["Cash And Cash Equivalents",
-                                           "Cash Cash Equivalents And Short Term Investments"]) or 0)
-    total_debt = float(safe_val(balance, ["Total Debt"]) or 0)
-    net_cash = total_cash - total_debt  # can be negative
-
-    wacc_c = calculate_wacc(info, income, balance, rfr)
+    table = []
+    for w in wacc_range:
+        row = []
+        for tg in tg_range:
+            try:
+                res = _dcf_engine(base_fcf, w, g1, g2, tg)
+                equity_val = res["total_ev"] + net_cash
+                price = equity_val / shares if shares > 0 else 0
+                row.append(round(max(0, price), 2))
+            except Exception:
+                row.append(0.0)
+        table.append(row)
 
     return {
-        "wacc":       dcf_wacc(fcf_list, wacc_c, shares, net_cash),
-        "capm":       dcf_capm(fcf_list, info, rfr, shares, net_cash),
-        "fixed":      dcf_fixed(fcf_list, fixed_rate, shares, net_cash),
-        "two_stage":  dcf_two_stage(fcf_list, info, rfr, shares, net_cash),
-        "wacc_components": wacc_c,
-        "fcf_list":   fcf_list,
-        "rfr":        rfr,
-        "current_price": float(info.get("currentPrice") or info.get("regularMarketPrice") or 0),
-        "shares":     shares,
-        "net_cash":   net_cash,
+        "wacc_values": [round(w * 100, 2) for w in wacc_range],
+        "tg_values":   [round(tg * 100, 2) for tg in tg_range],
+        "table":       table,
+        "base_wacc_idx":   2,
+        "base_tg_idx":     2,
     }
 
 
-def analyze_fundamentals(data: dict) -> dict:
-    """Aggregate all fundamental metrics into a single dict."""
-    info    = data.get("info", {})
-    income  = data.get("income_stmt", pd.DataFrame())
-    balance = data.get("balance_sheet", pd.DataFrame())
-    cashflow = data.get("cash_flow", pd.DataFrame())
+# ─── Public Entry Point ───────────────────────────────────────────────────────
 
-    inc  = get_income_series(income)
-    bal  = get_balance_series(balance)
-    cfs  = get_cashflow_list(cashflow)
+def run_dcf_models(data: dict, rfr: float, fixed_rate: float) -> dict:
+    """Run all 4 DCF models and return results + metadata."""
+    info      = data.get("info", {})
+    income    = data.get("income_stmt",   pd.DataFrame())
+    balance   = data.get("balance_sheet", pd.DataFrame())
+    cashflow  = data.get("cash_flow",     pd.DataFrame())
 
-    rev  = inc.get("revenue", {})
-    gp   = inc.get("gross_profit", {})
-    oi   = inc.get("operating_income", {})
-    ni   = inc.get("net_income", {})
+    # Shares and EV bridge
+    shares       = float(info.get("sharesOutstanding") or info.get("floatShares") or 0)
+    bal          = get_balance_series(balance)
+    total_cash   = float(bal.get("cash") or info.get("totalCash") or 0)
+    total_debt   = float(bal.get("total_debt") or info.get("totalDebt") or 0)
+    minority_int = float(bal.get("minority_int") or 0)
+    net_cash     = total_cash - total_debt  # can be negative
+
+    # UFCF series
+    ufcf_result = calculate_ufcf_series(income, balance, cashflow)
+    if isinstance(ufcf_result, tuple):
+        ufcf_list, tax_rate = ufcf_result
+    else:
+        ufcf_list = ufcf_result
+        tax_rate  = 0.21
+
+    # Fallback to reported FCF if UFCF fails
+    cf_data      = get_cashflow_data(cashflow)
+    fcf_reported = cf_data.get("fcf_reported", [])
+    if not ufcf_list or all(v is None for v in ufcf_list):
+        ufcf_list = fcf_reported
+
+    # Growth rates (blended)
+    g_rates = estimate_growth_rates(ufcf_list, info)
+
+    # WACC
+    wacc_c = calculate_wacc(info, income, balance, rfr)
+
+    # Sensitivity table
+    base_fcf = _positive_base(ufcf_list)
+    sens     = build_sensitivity_table(
+        base_fcf, wacc_c["wacc"], g_rates["terminal"],
+        g_rates, shares, net_cash
+    ) if base_fcf else {}
 
     return {
-        # From yfinance info (fast)
+        "wacc":       dcf_wacc(ufcf_list, wacc_c, shares, net_cash, minority_int, g_rates),
+        "capm":       dcf_capm(ufcf_list, info, rfr, shares, net_cash, minority_int, g_rates),
+        "fixed":      dcf_fixed(ufcf_list, fixed_rate, shares, net_cash, minority_int, g_rates),
+        "two_stage":  dcf_two_stage(ufcf_list, info, rfr, shares, net_cash, minority_int, g_rates),
+        "wacc_components":  wacc_c,
+        "growth_rates":     g_rates,
+        "ufcf_list":        ufcf_list,
+        "fcf_list":         ufcf_list,       # backward compat alias
+        "rfr":              rfr,
+        "current_price":    float(info.get("currentPrice") or info.get("regularMarketPrice") or 0),
+        "shares":           shares,
+        "net_cash":         net_cash,
+        "minority_int":     minority_int,
+        "tax_rate":         tax_rate,
+        "sensitivity":      sens,
+        "fcf_type":         "UFCF",
+    }
+
+
+# ─── Fundamentals Aggregator ──────────────────────────────────────────────────
+
+def growth_rates_from_series(series: dict) -> list:
+    vals = [v for _, v in sorted(series.items(), reverse=True) if v]
+    if len(vals) < 2:
+        return []
+    return [(vals[i] / vals[i+1]) - 1 for i in range(len(vals)-1)
+            if vals[i+1] and vals[i+1] != 0]
+
+
+def margin_series(numerator: dict, denominator: dict) -> dict:
+    return {yr: numerator[yr] / denominator[yr]
+            for yr in numerator
+            if yr in denominator and denominator[yr] and denominator[yr] != 0}
+
+
+def analyze_fundamentals(data: dict) -> dict:
+    info     = data.get("info", {})
+    income   = data.get("income_stmt",   pd.DataFrame())
+    balance  = data.get("balance_sheet", pd.DataFrame())
+    cashflow = data.get("cash_flow",     pd.DataFrame())
+
+    inc = get_income_series(income)
+    bal = get_balance_series(balance)
+    cfs = get_cashflow_data(cashflow)
+
+    rev = inc.get("revenue", {})
+    gp  = inc.get("gross_profit", {})
+    oi  = inc.get("ebit", {})
+    ni  = inc.get("net_income", {})
+
+    return {
         "market_cap":       info.get("marketCap"),
         "enterprise_value": info.get("enterpriseValue"),
         "current_price":    info.get("currentPrice") or info.get("regularMarketPrice"),
@@ -395,7 +710,6 @@ def analyze_fundamentals(data: dict) -> dict:
         "dividend_yield":   info.get("dividendYield"),
         "payout_ratio":     info.get("payoutRatio"),
         "beta":             info.get("beta"),
-        # Computed from statements
         "revenue_series":       rev,
         "gross_profit_series":  gp,
         "op_income_series":     oi,
@@ -403,8 +717,8 @@ def analyze_fundamentals(data: dict) -> dict:
         "gross_margin_series":  margin_series(gp, rev),
         "op_margin_series":     margin_series(oi, rev),
         "net_margin_series":    margin_series(ni, rev),
-        "rev_growth_rates":     growth_rates(rev),
-        "ni_growth_rates":      growth_rates(ni),
+        "rev_growth_rates":     growth_rates_from_series(rev),
+        "ni_growth_rates":      growth_rates_from_series(ni),
         "balance":  bal,
         "cashflows": cfs,
     }

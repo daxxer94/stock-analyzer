@@ -235,16 +235,36 @@ def _build_equity_query(criteria: ScreenerCriteria):
     return yf.EquityQuery('and', operands)
 
 
-def _run_yf_screener(query, size: int = 100) -> list:
-    """Run Yahoo screener and return list of ticker symbols."""
-    try:
-        result = _retry(lambda: yf.screen(query, sortField='intradaymarketcap',
-                                           sortAsc=False, size=min(size, 100)))
-        if result and 'quotes' in result:
-            return [q['symbol'] for q in result['quotes'] if q.get('symbol')]
-        return []
-    except Exception:
-        return []
+def _run_yf_screener(query, size: int = 150) -> list:
+    """
+    Run Yahoo screener with multiple sort fields to maximise unique results.
+    Merges and deduplicates results from 3 different sort orders.
+    """
+    symbols = []
+    per_call = min(size // 3, 100)
+
+    sort_fields = [
+        ('intradaymarketcap', False),   # Largest first
+        ('percentchange',     False),   # Biggest movers
+        ('intradaymarketcap', True),    # Smallest (mid/small cap coverage)
+    ]
+    for sort_field, sort_asc in sort_fields:
+        try:
+            result = _retry(
+                lambda sf=sort_field, sa=sort_asc: yf.screen(
+                    query, sortField=sf, sortAsc=sa, size=per_call),
+                retries=2, base_delay=1.5
+            )
+            if result and 'quotes' in result:
+                for q in result['quotes']:
+                    sym = q.get('symbol','')
+                    if sym and sym not in symbols:
+                        symbols.append(sym)
+            time.sleep(0.5)
+        except Exception:
+            pass
+
+    return symbols[:size]
 
 
 def _fetch_candidate_metrics(tickers: list, progress_cb=None) -> dict:
@@ -402,6 +422,61 @@ def _classify_stock_type(m: dict) -> str:
     return "Blend"
 
 
+def _growth_upside_score(m: dict) -> float:
+    """
+    Dedicated high-growth + high-upside component (0–10).
+    Rewards: strong revenue/EPS growth + large analyst price target upside +
+             positive FCF + improving margins + reasonable valuation for growth.
+    """
+    score = 0.0; max_s = 0.0
+
+    def add(v, mx):
+        nonlocal score, max_s
+        score += v; max_s += mx
+
+    # Revenue growth — primary driver
+    rg = m.get("revenue_growth") or 0
+    if rg > 0.40:   add(3.0, 3.0)
+    elif rg > 0.25: add(2.5, 3.0)
+    elif rg > 0.15: add(2.0, 3.0)
+    elif rg > 0.08: add(1.2, 3.0)
+    elif rg > 0:    add(0.5, 3.0)
+    else:           add(0.0, 3.0)
+
+    # EPS / earnings growth
+    eg = m.get("earnings_growth") or 0
+    if eg > 0.40:   add(2.5, 2.5)
+    elif eg > 0.20: add(2.0, 2.5)
+    elif eg > 0.10: add(1.3, 2.5)
+    elif eg > 0:    add(0.5, 2.5)
+    else:           add(0.0, 2.5)
+
+    # Analyst price target upside
+    cp = m.get("current_price") or 0
+    tp = m.get("target_mean") or 0
+    upside = (tp - cp) / cp if (tp and cp > 0) else 0
+    if upside > 0.50:   add(2.5, 2.5)
+    elif upside > 0.30: add(2.0, 2.5)
+    elif upside > 0.15: add(1.5, 2.5)
+    elif upside > 0:    add(0.8, 2.5)
+    else:               add(0.0, 2.5)
+
+    # Margin expansion proxy: high gross margin on growing revenue
+    gm = m.get("gross_margin") or 0
+    if gm > 0.65 and rg > 0.10:  add(1.0, 1.0)
+    elif gm > 0.40:               add(0.6, 1.0)
+    elif gm > 0.20:               add(0.3, 1.0)
+    else:                         add(0.0, 1.0)
+
+    # PEG < 1.5 = growth at reasonable price
+    peg = m.get("peg") or 0
+    if peg and 0 < peg < 1.0:   add(1.0, 1.0)
+    elif peg and 0 < peg < 1.5: add(0.7, 1.0)
+    else:                        add(0.0, 1.0)
+
+    return (score / max_s * 10) if max_s > 0 else 5.0
+
+
 def _score_candidates(candidates: dict) -> list:
     """
     Apply a simplified scoring to each candidate (no full DCF — too slow for 50+ stocks).
@@ -498,8 +573,12 @@ def _score_candidates(candidates: dict) -> list:
         if max_pts > 0:
             score = (pts / max_pts) * 10
 
+        # Blend in growth+upside component (30% weight)
+        gu_score = _growth_upside_score(m)
+        blended  = score * 0.70 + gu_score * 0.30
+
         stock_type = _classify_stock_type(m)
-        scored.append((ticker, m, round(score, 2), stock_type, upside))
+        scored.append((ticker, m, round(blended, 2), stock_type, upside, round(gu_score, 2)))
 
     # Sort by score descending
     scored.sort(key=lambda x: x[2], reverse=True)
@@ -509,62 +588,70 @@ def _score_candidates(candidates: dict) -> list:
 def run_screener(criteria: ScreenerCriteria, progress_cb=None) -> list:
     """
     Main screener entry point.
+    Runs two Yahoo screener passes (large-cap + small/mid) for broader coverage.
     Returns list of (ticker, metrics, score, stock_type, upside) tuples.
     """
-    # Step 1: Build query
     query = _build_equity_query(criteria)
 
-    # Step 2: Get candidates from Yahoo screener
     if progress_cb:
         progress_cb(0, 100, "Querying Yahoo Finance screener…")
 
+    # Two-pass query: sorted by mktcap desc then asc for full size coverage
     candidates_raw = []
-    try:
-        candidates_raw = _run_yf_screener(query, size=min(criteria.max_results * 3, 100))
-    except Exception:
-        pass
+    seen_syms = set()
+
+    for sort_asc in [False, True]:
+        try:
+            batch = _retry(lambda sa=sort_asc: yf.screen(
+                query, sortField="intradaymarketcap", sortAsc=sa, size=100
+            ))
+            if batch and "quotes" in batch:
+                for q in batch.get("quotes", []):
+                    sym = q.get("symbol", "")
+                    if sym and sym not in seen_syms:
+                        seen_syms.add(sym)
+                        candidates_raw.append(sym)
+        except Exception:
+            pass
+        if progress_cb:
+            progress_cb(5, 100, f"Pass {'1' if not sort_asc else '2'}: {len(candidates_raw)} candidates so far…")
+        time.sleep(0.6)
 
     if not candidates_raw:
         return []
 
-    # Limit to reasonable number for fetching
-    fetch_limit = min(len(candidates_raw), criteria.max_results * 2, 80)
+    fetch_limit = min(len(candidates_raw), max(criteria.max_results * 3, 60), 120)
     candidates_raw = candidates_raw[:fetch_limit]
 
     if progress_cb:
-        progress_cb(10, 100, f"Found {len(candidates_raw)} candidates, fetching metrics…")
+        progress_cb(12, 100, f"Fetching details for {len(candidates_raw)} candidates…")
 
-    # Step 3: Fetch metrics
     def _prog(i, total, t):
         if progress_cb:
-            pct = 10 + int((i / max(total, 1)) * 70)
+            pct = 12 + int((i / max(total, 1)) * 68)
             progress_cb(pct, 100, f"Fetching {t} ({i+1}/{total})…")
 
-    metrics = _fetch_candidate_metrics(candidates_raw, progress_cb=_prog)
+    metrics  = _fetch_candidate_metrics(candidates_raw, progress_cb=_prog)
 
     if progress_cb:
-        progress_cb(80, 100, "Applying filters and scoring…")
+        progress_cb(82, 100, "Applying filters…")
 
-    # Step 4: Apply client-side filters
     filtered = _apply_client_filters(metrics, criteria)
 
-    # Step 5: Score and sort
+    if progress_cb:
+        progress_cb(90, 100, f"Scoring {len(filtered)} candidates…")
+
     scored = _score_candidates(filtered)
 
-    # Step 6: Apply minimum score filter
     if criteria.min_score > 0:
         scored = [s for s in scored if s[2] >= criteria.min_score]
 
-    # Step 7: Limit results
     result = scored[:criteria.max_results]
 
     if progress_cb:
-        progress_cb(100, 100, f"Done — {len(result)} stocks found.")
+        progress_cb(100, 100, f"Done — {len(result)} stocks matched.")
 
     return result
-
-
-# ─── Preset screens ───────────────────────────────────────────────────────────
 
 def get_preset_criteria(preset_name: str) -> ScreenerCriteria:
     """Return pre-configured criteria for common screen types."""
@@ -622,5 +709,30 @@ def get_preset_criteria(preset_name: str) -> ScreenerCriteria:
         c.max_pe        = 40
         c.min_score     = 7.0
         c.max_results   = 20
+
+    elif preset_name == "🚀 High Growth + High Upside":
+        # Pure momentum: high revenue growth + large analyst upside
+        c.min_rev_growth = 0.15
+        c.min_eps_growth = 0.10
+        c.max_fwd_pe     = 80     # allow premium valuation for growth
+        c.max_peg        = 3.0
+        c.min_score      = 5.5
+        c.max_results    = 30
+        c.stock_types    = ["Growth", "GARP", "Small-Cap Growth"]
+
+    elif preset_name == "📈 Revenue Accelerators":
+        # Top-line acceleration: fastest-growing companies regardless of profitability
+        c.min_rev_growth  = 0.20
+        c.max_fwd_pe      = 100
+        c.min_gross_margin = 0.30   # at least some unit economics
+        c.max_results     = 25
+
+    elif preset_name == "🎯 Analyst Favourites":
+        # Stocks with high analyst conviction and meaningful upside targets
+        c.max_pe         = 50
+        c.min_rev_growth = 0.05
+        c.min_score      = 6.0
+        c.max_results    = 25
+        # Will rank by analyst upside within scoring
 
     return c

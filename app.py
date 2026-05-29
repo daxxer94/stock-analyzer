@@ -31,6 +31,7 @@ from sec_data            import (fetch_news, build_news_search_links, fetch_sec_
                                   fetch_sec_filings, extract_customers_suppliers,
                                   generate_swot, get_regulatory_info)
 from screener_ui         import render_screener_page
+from cca                 import run_cca, format_cca_peer_table
 
 # ─── Page config ─────────────────────────────────────────────────────────────
 try:
@@ -317,6 +318,158 @@ def build_price_chart(hist, ind, ticker):
     )
     fig.update_xaxes(showgrid=False, tickfont=dict(size=11))
     fig.update_yaxes(tickfont=dict(size=11))
+    return fig
+
+
+
+def build_football_field(football_field: list, dcf_results: dict,
+                          current_price: float, native_ccy: str) -> go.Figure:
+    """
+    Football field valuation chart combining CCA ranges + DCF values.
+    Horizontal bars show low (p25) to high (p75) with median dot.
+    """
+    disp_ccy = st.session_state.get("display_ccy_code", native_ccy)
+    rates    = st.session_state.get("fx_rates", {})
+
+    rows = []
+    # CCA rows
+    for f in football_field:
+        rows.append({
+            "label": f["label"],
+            "low":   f["low"],
+            "mid":   f["mid"],
+            "high":  f["high"],
+            "color": "#42A5F5",
+            "type":  "CCA",
+        })
+    # DCF rows
+    dcf_labels = [("wacc","WACC DCF"),("capm","CAPM DCF"),
+                  ("fixed","Fixed Rate"),("two_stage","Two-Stage")]
+    for key, lbl in dcf_labels:
+        m = dcf_results.get(key, {})
+        iv = m.get("intrinsic_value")
+        if iv and iv > 0 and not m.get("error"):
+            rows.append({"label": lbl, "low": iv*0.85, "mid": iv, "high": iv*1.15,
+                         "color": "#66BB6A", "type": "DCF"})
+
+    if not rows:
+        return go.Figure()
+
+    labels = [r["label"] for r in rows]
+    lows   = [r["low"]   for r in rows]
+    mids   = [r["mid"]   for r in rows]
+    highs  = [r["high"]  for r in rows]
+    colors = [r["color"] for r in rows]
+
+    fig = go.Figure()
+
+    # Range bars (low → high)
+    for i, row in enumerate(rows):
+        lo  = fmt_currency(row["low"],  native_ccy, disp_ccy, rates)
+        hi  = fmt_currency(row["high"], native_ccy, disp_ccy, rates)
+        mid = fmt_currency(row["mid"],  native_ccy, disp_ccy, rates)
+        fig.add_trace(go.Bar(
+            x=[row["high"] - row["low"]], y=[row["label"]],
+            base=[row["low"]], orientation="h",
+            marker_color=row["color"], opacity=0.35,
+            showlegend=False,
+            hovertemplate=f"{row['label']}<br>Range: {lo} – {hi}<br>Mid: {mid}<extra></extra>",
+        ))
+        # Median dot
+        fig.add_trace(go.Scatter(
+            x=[row["mid"]], y=[row["label"]],
+            mode="markers",
+            marker=dict(color=row["color"], size=10, symbol="diamond"),
+            showlegend=False,
+            hovertemplate=f"{row['label']}<br>Midpoint: {mid}<extra></extra>",
+        ))
+
+    # Current price line
+    fig.add_vline(x=current_price,
+                  line=dict(color="#FC8181", width=2, dash="dash"),
+                  annotation_text=f"  Current {fmt_currency(current_price, native_ccy, disp_ccy, rates)}",
+                  annotation_font=dict(color="#FC8181", size=11))
+
+    # Legend annotations
+    fig.add_annotation(x=0.02, y=1.04, xref="paper", yref="paper",
+        text="<span style='color:#42A5F5'>■</span> CCA Range (P25–P75)  "
+             "<span style='color:#66BB6A'>■</span> DCF ±15%  "
+             "<span style='color:#FC8181'>|</span> Current Price",
+        showarrow=False, font=dict(size=11), xanchor="left")
+
+    all_vals = [r["high"] for r in rows] + [r["low"] for r in rows] + [current_price]
+    x_min = max(0, min(all_vals) * 0.80)
+    x_max = max(all_vals) * 1.15
+
+    fig.update_layout(
+        title=dict(text="⚽ Football Field Valuation — CCA + DCF Ranges",
+                   font_size=13, x=0.01),
+        height=max(300, len(rows) * 52 + 100),
+        template="plotly_dark",
+        barmode="overlay",
+        paper_bgcolor="#0e1117", plot_bgcolor="#1a1d2e",
+        margin=dict(l=160, r=60, t=60, b=40),
+        xaxis=dict(
+            title="Implied Share Price",
+            showgrid=True, gridcolor="rgba(255,255,255,0.06)",
+            tickfont=dict(size=11),
+            range=[x_min, x_max],
+        ),
+        yaxis=dict(tickfont=dict(size=11), autorange="reversed"),
+        hoverlabel=dict(bgcolor="#1a1d2e", font_size=12),
+    )
+    return fig
+
+
+def build_sensitivity_chart(sens: dict, current_price: float, native_ccy: str) -> go.Figure:
+    """Heat-map style table: WACC × Terminal Growth → Implied Price."""
+    if not sens or not sens.get("table"):
+        return go.Figure()
+
+    wacc_lbls = [f"{w:.1f}%" for w in sens["wacc_values"]]
+    tg_lbls   = [f"{t:.1f}%" for t in sens["tg_values"]]
+    table     = sens["table"]
+
+    # Color each cell relative to current price
+    z     = table
+    texts = [[f"${table[r][c]:.2f}" for c in range(len(tg_lbls))]
+             for r in range(len(wacc_lbls))]
+
+    fig = go.Figure(go.Heatmap(
+        z=z, x=tg_lbls, y=wacc_lbls,
+        text=texts, texttemplate="%{text}",
+        colorscale=[
+            [0.0,  "#B71C1C"],
+            [0.35, "#EF5350"],
+            [0.50, "#FFC107"],
+            [0.65, "#66BB6A"],
+            [1.0,  "#00C853"],
+        ],
+        zmid=current_price,
+        showscale=True,
+        colorbar=dict(title="Implied Price", tickfont=dict(size=10)),
+        hovertemplate="WACC: %{y}<br>Terminal g: %{x}<br>Implied: %{text}<extra></extra>",
+    ))
+
+    # Highlight the base case cell
+    bi = sens.get("base_wacc_idx", 2)
+    ti = sens.get("base_tg_idx",   2)
+    if bi < len(wacc_lbls) and ti < len(tg_lbls):
+        fig.add_shape(type="rect",
+            x0=ti-0.5, x1=ti+0.5, y0=bi-0.5, y1=bi+0.5,
+            line=dict(color="white", width=2))
+
+    fig.update_layout(
+        title=dict(text="Sensitivity: WACC × Terminal Growth Rate → Implied Share Price",
+                   font_size=12, x=0.01),
+        height=260,
+        template="plotly_dark",
+        paper_bgcolor="#0e1117",
+        margin=dict(l=60, r=60, t=50, b=40),
+        xaxis=dict(title="Terminal Growth Rate (g)", tickfont=dict(size=11)),
+        yaxis=dict(title="WACC", tickfont=dict(size=11)),
+        font=dict(size=11),
+    )
     return fig
 
 
@@ -920,6 +1073,205 @@ def render_news_tab(ticker, info, news_items):
     )
 
 
+
+def render_cca_tab(ticker, info, peer_data, dcf, current_price):
+    """
+    Comparable Company Analysis tab.
+    BIWS methodology: peer multiples → implied value ranges → football field.
+    """
+    native_ccy = info.get("currency", "USD")
+    disp_ccy   = st.session_state.get("display_ccy_code", native_ccy)
+    rates      = st.session_state.get("fx_rates", {})
+
+    if not peer_data:
+        st.info("No peer data available — run analysis with peers to enable CCA.")
+        return
+
+    cca = run_cca(info, peer_data)
+    if not cca:
+        st.warning("Could not compute CCA — insufficient peer data.")
+        return
+
+    summ = cca.get("summary", {})
+
+    # ── Header: CCA Implied Range ─────────────────────────────────────────────
+    ov_low  = summ.get("overall_low")
+    ov_mid  = summ.get("overall_mid")
+    ov_high = summ.get("overall_high")
+    upside  = summ.get("implied_upside")
+
+    if ov_mid:
+        udcolor = "#00C853" if (upside or 0) >= 0 else "#EF5350"
+        st.markdown(f"""
+        <div style='background:#1a1d2e;border:1px solid #3a3f5c;border-radius:12px;
+                     padding:18px 24px;margin-bottom:16px'>
+          <div style='font-size:12px;color:#718096;margin-bottom:4px'>
+            Comparable Company Analysis — {summ.get("n_peers",0)} peers · {summ.get("n_multiples",0)} multiples
+          </div>
+          <div style='display:flex;gap:28px;flex-wrap:wrap;align-items:center'>
+            <div>
+              <div style='font-size:11px;color:#718096'>Current Price</div>
+              <div style='font-size:20px;font-weight:800;color:#e2e8f0'>
+                {fmt_currency(current_price, native_ccy, disp_ccy, rates)}
+              </div>
+            </div>
+            <div style='font-size:20px;color:#718096'>→</div>
+            <div>
+              <div style='font-size:11px;color:#718096'>CCA Median Implied</div>
+              <div style='font-size:20px;font-weight:800;color:#e2e8f0'>
+                {fmt_currency(ov_mid, native_ccy, disp_ccy, rates)}
+              </div>
+              {f"<div style='font-size:13px;color:{udcolor};font-weight:700'>{'▲' if (upside or 0)>=0 else '▼'} {abs(upside):.1%} implied {'upside' if (upside or 0)>=0 else 'downside'}</div>" if upside is not None else ""}
+            </div>
+            <div>
+              <div style='font-size:11px;color:#718096'>CCA Range (P25–P75)</div>
+              <div style='font-size:15px;color:#94a3b8;font-weight:600'>
+                {fmt_currency(ov_low, native_ccy, disp_ccy, rates)} – {fmt_currency(ov_high, native_ccy, disp_ccy, rates)}
+              </div>
+            </div>
+          </div>
+        </div>""", unsafe_allow_html=True)
+
+    # ── Football Field ────────────────────────────────────────────────────────
+    ff = cca.get("football_field", [])
+    if ff:
+        fig_ff = build_football_field(ff, dcf, current_price, native_ccy)
+        if fig_ff.data:
+            st.plotly_chart(fig_ff, use_container_width=True)
+
+    # ── Methodology explanation ───────────────────────────────────────────────
+    with st.expander("📖 How CCA works (BIWS / JPMorgan methodology)", expanded=False):
+        st.markdown("""
+**Comparable Company Analysis** values a company based on what similar public companies trade at in the market right now.
+
+**The 4-step process (per BIWS / Breaking Into Wall Street):**
+
+1. **Select peers** — companies in the same industry, similar geography and size (5–10 is ideal)
+2. **Choose multiples** — EV/Revenue, EV/EBITDA (EV-based), P/E, Forward P/E (equity-based)
+3. **Calculate peer statistics** — 25th percentile, median, 75th percentile for each multiple
+4. **Apply to your company** — multiply the peer percentile by your company's metric to get an implied price
+
+**EV-based multiples** (EV/Revenue, EV/EBITDA):
+```
+Implied EV = Peer Multiple × Target's Metric (Revenue or EBITDA)
+Implied Equity Value = Implied EV + Cash − Debt
+Implied Share Price = Implied Equity Value ÷ Shares Outstanding
+```
+
+**Equity-based multiples** (P/E, P/B):
+```
+Implied Share Price = Peer Multiple × Target's EPS (or Book Value per Share)
+```
+
+**Reading the Football Field:**
+- Each bar shows the P25–P75 range of implied prices
+- The diamond shows the median
+- The red line is the current market price
+- Bars to the **right** of the current price suggest undervaluation
+- Bars to the **left** suggest overvaluation
+
+**CCA vs DCF:**
+- CCA reflects what the market is paying *right now* for comparable businesses
+- DCF reflects the intrinsic value based on your long-term cash flow projections
+- When CCA and DCF agree → high conviction. When they diverge → investigate why.
+        """)
+
+    # ── Peer Multiples Table ──────────────────────────────────────────────────
+    st.markdown(section_header("📊 Peer Multiples Table"), unsafe_allow_html=True)
+    st.caption("Target's own multiples shown for comparison. "
+               "Peer statistics: Min | P25 | **Median** | P75 | Max")
+
+    peer_stats = cca.get("peer_stats", {})
+    target_own = cca.get("target_multiples", {})
+
+    multiple_defs = [
+        ("ev_revenue",  "EV / Revenue"),
+        ("ev_ebitda",   "EV / EBITDA"),
+        ("pe_trailing", "P/E (TTM)"),
+        ("pe_forward",  "Forward P/E"),
+        ("price_book",  "P / Book"),
+        ("price_sales", "P / Sales"),
+    ]
+
+    # Header row
+    hcols = st.columns([1.5, 0.8, 0.8, 0.9, 0.8, 0.8, 0.8])
+    for hcol, htxt in zip(hcols, ["Multiple", "Target", "Min", "P25", "**Median**", "P75", "Max"]):
+        hcol.markdown(
+            f"<div style='font-size:11px;font-weight:700;color:#718096;"
+            f"padding:4px 0;border-bottom:2px solid #3a3f5c'>{htxt}</div>",
+            unsafe_allow_html=True
+        )
+
+    for key, lbl in multiple_defs:
+        stats  = peer_stats.get(key, {})
+        target_v = target_own.get(key)
+        if not stats:
+            continue
+
+        med = stats.get("median")
+        # Is target cheap (below median for higher-is-worse multiples)?
+        is_cheap = target_v and med and target_v < med
+
+        c1,c2,c3,c4,c5,c6,c7 = st.columns([1.5, 0.8, 0.8, 0.9, 0.8, 0.8, 0.8])
+        c1.markdown(f"<div style='font-size:12px;font-weight:600;color:#e2e8f0'>{lbl}</div>",
+                    unsafe_allow_html=True)
+
+        tv_color = "#68d391" if is_cheap else "#e2e8f0"
+        c2.markdown(
+            f"<div style='font-size:12px;font-weight:700;color:{tv_color}'>"
+            f"{fmt(target_v, dec=1) if target_v else '—'}</div>",
+            unsafe_allow_html=True
+        )
+        for col, pct in [(c3,"min"),(c4,"p25"),(c5,"median"),(c6,"p75"),(c7,"max")]:
+            v = stats.get(pct)
+            is_median = pct == "median"
+            col.markdown(
+                f"<div style='font-size:{'13' if is_median else '11'}px;"
+                f"font-weight:{'700' if is_median else '400'};"
+                f"color:{'#e2e8f0' if is_median else '#94a3b8'}'>"
+                f"{fmt(v, dec=1) if v else '—'}</div>",
+                unsafe_allow_html=True
+            )
+
+    st.divider()
+
+    # ── Implied Price Table ───────────────────────────────────────────────────
+    st.markdown(section_header("💰 Implied Share Prices"), unsafe_allow_html=True)
+    st.caption("Applying peer percentile multiples to the target company's own metrics")
+
+    implied = cca.get("implied_prices", {})
+    if implied:
+        ip_cols = st.columns([1.5, 0.9, 0.9, 0.9, 0.9])
+        for hcol, htxt in zip(ip_cols, ["Multiple", "P25 Implied", "Median Implied", "P75 Implied", "vs Current"]):
+            hcol.markdown(f"<div style='font-size:11px;font-weight:700;color:#718096;"
+                          f"padding:4px 0;border-bottom:2px solid #3a3f5c'>{htxt}</div>",
+                          unsafe_allow_html=True)
+
+        for key, lbl in multiple_defs:
+            prices = implied.get(key, {})
+            if not prices:
+                continue
+            mid    = prices.get("median", 0)
+            vs_cur = (mid - current_price) / current_price if (mid and current_price > 0) else None
+            color  = "#68d391" if (vs_cur or 0) >= 0.05 else ("#fc8181" if (vs_cur or 0) <= -0.05 else "#fbd38d")
+
+            c1,c2,c3,c4,c5 = st.columns([1.5, 0.9, 0.9, 0.9, 0.9])
+            c1.markdown(f"<div style='font-size:12px;color:#e2e8f0'>{lbl}</div>",
+                        unsafe_allow_html=True)
+            c2.markdown(f"<div style='font-size:12px;color:#94a3b8'>"
+                        f"{fmt_currency(prices.get('p25',0), native_ccy, disp_ccy, rates)}</div>",
+                        unsafe_allow_html=True)
+            c3.markdown(f"<div style='font-size:13px;font-weight:700;color:#e2e8f0'>"
+                        f"{fmt_currency(mid, native_ccy, disp_ccy, rates)}</div>",
+                        unsafe_allow_html=True)
+            c4.markdown(f"<div style='font-size:12px;color:#94a3b8'>"
+                        f"{fmt_currency(prices.get('p75',0), native_ccy, disp_ccy, rates)}</div>",
+                        unsafe_allow_html=True)
+            c5.markdown(f"<div style='font-size:13px;font-weight:700;color:{color}'>"
+                        f"{'▲' if (vs_cur or 0)>=0 else '▼'} {abs(vs_cur or 0):.1%}</div>",
+                        unsafe_allow_html=True)
+
+
 # ─── Per-stock Deep Dive ──────────────────────────────────────────────────────
 
 def render_stock_tab(ticker, data, dcf, fund, indicators, signals,
@@ -940,9 +1292,9 @@ def render_stock_tab(ticker, data, dcf, fund, indicators, signals,
         beat_pct = sum(1 for s in past_surp if s > 0) / len(past_surp)
     eps_fs = "beat" if beat_pct and beat_pct > 0.6 else ("miss" if beat_pct and beat_pct < 0.4 else "inline")
 
-    tabs = st.tabs(["📋 Overview", "💰 Financials & DCF", "📊 Valuation & Peers",
-                     "📈 Technical Analysis", "🎯 Sentiment", "📅 Earnings & Forecasts",
-                     "🏢 Intelligence", "📰 News", "🔮 Prediction"])
+    tabs = st.tabs(["📋 Overview", "💰 Financials & DCF", "📊 Comparable Analysis",
+                     "📊 Valuation & Peers", "📈 Technical Analysis", "🎯 Sentiment",
+                     "📅 Earnings & Forecasts", "🏢 Intelligence", "📰 News", "🔮 Prediction"])
 
     # ── Overview ──────────────────────────────────────────────────────────────
     with tabs[0]:
@@ -1127,6 +1479,39 @@ def render_stock_tab(ticker, data, dcf, fund, indicators, signals,
         st.caption(f"Current price: **{fmt(cp_ref, prefix='$')}** · "
                    f"FCF base: {fmt((dcf.get('fcf_list',[None])[0]), prefix='$') if dcf.get('fcf_list') else '—'}")
 
+        # Sensitivity table
+        sens = dcf.get("sensitivity", {})
+        if sens:
+            with st.expander("🌡️ Sensitivity Analysis — WACC × Terminal Growth Rate", expanded=False):
+                st.caption("Each cell = implied share price. "
+                           "White box = base case. Green = above current, red = below.")
+                fig_sens = build_sensitivity_chart(sens, dcf.get("current_price",0) or cp, 
+                                                    info.get("currency","USD"))
+                if fig_sens.data:
+                    st.plotly_chart(fig_sens, use_container_width=True)
+
+        # Growth rate sources
+        gr = dcf.get("growth_rates", {})
+        if gr:
+            with st.expander("📐 Growth Rate Assumptions", expanded=False):
+                st.markdown(f"""
+| Component | Value | Source |
+|---|---|---|
+| Stage 1 Growth (years 1–5) | **{gr.get('near', 0):.1%}** | Blended: historical UFCF + analyst estimates |
+| Stage 2 Growth (years 6–10) | **{gr.get('fade', 0):.1%}** | Fade = Stage 1 × 50% |
+| Terminal Growth (perpetuity) | **{gr.get('terminal', 0):.1%}** | ≈ long-run nominal GDP |
+| Historical UFCF Growth | {gr.get('hist_ufcf', 0):.1%} | From financial statements |
+| Analyst EPS Growth | {f"{gr.get('analyst_eps'):.1%}" if gr.get('analyst_eps') else '—'} | Yahoo Finance consensus |
+                """)
+
+        # FCF type note
+        fcf_type = dcf.get("fcf_type", "FCF")
+        if fcf_type == "UFCF":
+            st.info("💡 **Improvement:** These models now use **Unlevered Free Cash Flow (UFCF)** "
+                    "= EBIT×(1−t) + D&A − CapEx − ΔNWC, consistent with JPMorgan M&A methodology. "
+                    "UFCF is more accurate than reported operating cash flow as it removes "
+                    "working capital noise and financing effects.", icon="📐")
+
         # What the numbers mean
         with st.expander("📊 What do these DCF numbers actually mean?"):
             st.markdown("""
@@ -1236,8 +1621,12 @@ Each model answers a **different question**:
 **A conservative investor** takes the lowest of the 4. **A bull case** takes the highest. The range itself tells you the **uncertainty band** around fair value.
             """)
 
-    # ── Valuation & Peers ─────────────────────────────────────────────────────
+    # ── Comparable Company Analysis ──────────────────────────────────────────
     with tabs[2]:
+        render_cca_tab(ticker, info, peer_data, dcf, cp)
+
+    # ── Valuation & Peers ──────────────────────────────────────────────────
+    with tabs[3]:
         n_peers = len(peer_data)
         if n_peers == 0:
             st.info("No peer data available. Try entering manual peers in the sidebar.")
@@ -1289,7 +1678,7 @@ Each model answers a **different question**:
                 st.divider()
 
     # ── Technical Analysis ────────────────────────────────────────────────────
-    with tabs[3]:
+    with tabs[4]:
         hist = data.get("hist_2y", pd.DataFrame())
         if hist.empty or not indicators:
             st.warning("Insufficient price history for technical analysis.")
@@ -1321,7 +1710,7 @@ Each model answers a **different question**:
                     st.markdown("")
 
     # ── Sentiment ─────────────────────────────────────────────────────────────
-    with tabs[4]:
+    with tabs[5]:
         c1, c2 = st.columns([1, 1])
         with c1:
             fig_sent = build_sentiment_donut(sentiment, ticker)
@@ -1361,19 +1750,19 @@ Each model answers a **different question**:
                 render_mrow(key, lbl, val)
 
     # ── Earnings & Forecasts ──────────────────────────────────────────────────
-    with tabs[5]:
+    with tabs[6]:
         render_earnings_section(data, ticker, earn_rows, cal_info, estimates, eps_trend_data)
 
     # ── Intelligence (SWOT + Customers/Suppliers + Filings) ───────────────────
-    with tabs[6]:
+    with tabs[7]:
         render_intelligence_tab(ticker, info, scoring, signals, sentiment, fund, comparison)
 
     # ── News ──────────────────────────────────────────────────────────────────
-    with tabs[7]:
+    with tabs[8]:
         render_news_tab(ticker, info, data.get("news", []))
 
     # ── Prediction ────────────────────────────────────────────────────────────
-    with tabs[8]:
+    with tabs[9]:
         render_prediction_tab(ticker, info, dcf, sentiment, scoring, signals, fund)
 
 

@@ -96,13 +96,22 @@ def render_criteria_panel() -> ScreenerCriteria:
     # ── Preset buttons ────────────────────────────────────────────────────────
     st.markdown("#### ⚡ Quick Presets")
     presets = [
-        "High Growth Tech", "Dividend Income", "European Value",
-        "Asian Growth", "Quality Compounders", "Undervalued Gems",
-        "Healthcare Innovation", "High Conviction (Global)",
+        "🚀 High Growth + High Upside",
+        "📈 Revenue Accelerators",
+        "🎯 Analyst Favourites",
+        "High Growth Tech",
+        "Dividend Income",
+        "European Value",
+        "Asian Growth",
+        "Quality Compounders",
+        "Undervalued Gems",
+        "Healthcare Innovation",
+        "High Conviction (Global)",
     ]
-    preset_cols = st.columns(2)
+    # 3 columns for presets
+    preset_cols = st.columns(3)
     for i, p in enumerate(presets):
-        if preset_cols[i % 2].button(p, key=f"preset_{p}", use_container_width=True):
+        if preset_cols[i % 3].button(p, key=f"preset_{p}", use_container_width=True):
             st.session_state["screener_preset"] = p
             st.rerun()
 
@@ -284,7 +293,7 @@ def _render_all_filters(c: ScreenerCriteria) -> ScreenerCriteria:
     # ── Result count ──────────────────────────────────────────────────────────
     st.markdown("#### 📋 Results")
     c.max_results = st.selectbox("Max results to show",
-        [10, 20, 30, 50], index=1, key="max_results")
+        [10, 20, 30, 50, 75, 100], index=2, key="max_results")
 
     return c
 
@@ -306,7 +315,8 @@ def render_results(results: list):
     # Summary cards (top 3)
     st.markdown("#### 🏆 Top Picks")
     top_cols = st.columns(min(3, len(results)))
-    for i, (ticker, m, score, stype, upside) in enumerate(results[:3]):
+    for i, result_row in enumerate(results[:3]):
+        ticker, m, score, stype, upside = result_row[0], result_row[1], result_row[2], result_row[3], result_row[4]
         cp = m.get("current_price", 0)
         cp_str = fmt_currency(cp, m.get("currency","USD"), disp_ccy, rates)
         with top_cols[i]:
@@ -337,8 +347,8 @@ def render_results(results: list):
     st.markdown("#### 📋 All Results")
 
     # Column headers
-    hcols = st.columns([1.4, 1.6, 0.7, 0.8, 0.8, 0.8, 0.8, 0.8, 0.8, 1.2])
-    headers = ["Ticker","Name / Type","Score","Mkt Cap","P/E","Fwd P/E","Rev Grw","Net Mgn","Analyst↑","Action"]
+    hcols = st.columns([1.4, 1.6, 0.7, 0.7, 0.7, 0.7, 0.7, 0.7, 0.7, 0.7, 1.1])
+    headers = ["Ticker","Name / Type","Score","G+U","Mkt Cap","P/E","Fwd P/E","Rev Grw","Net Mgn","Analyst↑","Action"]
     for hcol, htxt in zip(hcols, headers):
         hcol.markdown(
             f"<div style='font-size:11px;font-weight:700;color:#718096;"
@@ -346,12 +356,14 @@ def render_results(results: list):
             unsafe_allow_html=True
         )
 
-    for rank, (ticker, m, score, stype, upside) in enumerate(results):
+    for rank, result_row in enumerate(results):
+        ticker, m, score, stype, upside = result_row[0], result_row[1], result_row[2], result_row[3], result_row[4]
+        gu_score = result_row[5] if len(result_row) > 5 else None
         cp     = m.get("current_price", 0)
         ccy    = m.get("currency", "USD")
         cp_str = fmt_currency(cp, ccy, disp_ccy, rates)
 
-        c1,c2,c3,c4,c5,c6,c7,c8,c9,c10 = st.columns([1.4,1.6,0.7,0.8,0.8,0.8,0.8,0.8,0.8,1.2])
+        c1,c2,c3,c4,c5,c6,c7,c8,c9,c10,c11 = st.columns([1.4,1.6,0.7,0.7,0.7,0.7,0.7,0.7,0.7,0.7,1.1])
 
         c1.markdown(
             f"<div style='font-size:13px;font-weight:700;color:#e2e8f0'>{ticker}</div>"
@@ -370,27 +382,34 @@ def render_results(results: list):
         sc = score_color(score)
         c3.markdown(f"<div style='font-size:14px;font-weight:700;color:{sc}'>{score:.1f}</div>",
                     unsafe_allow_html=True)
-        c4.markdown(f"<div style='font-size:12px'>{_fmt(m.get('market_cap'), prefix='$')}</div>",
+        # G+U = Growth + Upside sub-score
+        if gu_score is not None:
+            gu_c = score_color(gu_score)
+            c4.markdown(f"<div style='font-size:13px;font-weight:600;color:{gu_c}' title='Growth+Upside score'>{gu_score:.1f}</div>",
+                        unsafe_allow_html=True)
+        else:
+            c4.markdown("—")
+        c5.markdown(f"<div style='font-size:12px'>{_fmt(m.get('market_cap'), prefix='$')}</div>",
                     unsafe_allow_html=True)
-        c5.markdown(f"<div style='font-size:12px'>{_fmt(m.get('pe_trailing'), dec=1)}</div>",
+        c6.markdown(f"<div style='font-size:12px'>{_fmt(m.get('pe_trailing'), dec=1)}</div>",
                     unsafe_allow_html=True)
-        c6.markdown(f"<div style='font-size:12px'>{_fmt(m.get('pe_forward'), dec=1)}</div>",
+        c7.markdown(f"<div style='font-size:12px'>{_fmt(m.get('pe_forward'), dec=1)}</div>",
                     unsafe_allow_html=True)
         rg = m.get("revenue_growth")
-        c7.markdown(
+        c8.markdown(
             f"<div style='font-size:12px;color:{'#66BB6A' if rg and rg>0 else '#EF5350' if rg else '#718096'}'>"
             f"{_fmt(rg, pct=True)}</div>",
             unsafe_allow_html=True
         )
         nm = m.get("net_margin")
-        c8.markdown(
+        c9.markdown(
             f"<div style='font-size:12px;color:{'#66BB6A' if nm and nm>0 else '#EF5350' if nm else '#718096'}'>"
             f"{_fmt(nm, pct=True)}</div>",
             unsafe_allow_html=True
         )
-        c9.markdown(upside_badge(upside) if upside else "—", unsafe_allow_html=True)
+        c10.markdown(upside_badge(upside) if upside else "—", unsafe_allow_html=True)
 
-        if c10.button("▶ Analyze", key=f"res_analyze_{ticker}_{rank}",
+        if c11.button("▶ Analyze", key=f"res_analyze_{ticker}_{rank}",
                       use_container_width=True):
             _send_to_analyzer(ticker)
 
@@ -399,7 +418,8 @@ def render_results(results: list):
     # ── Export to CSV ─────────────────────────────────────────────────────────
     with st.expander("📥 Export results as CSV"):
         rows = []
-        for ticker, m, score, stype, upside in results:
+        for result_row in results:
+            ticker, m, score, stype, upside = result_row[0], result_row[1], result_row[2], result_row[3], result_row[4]
             rows.append({
                 "Ticker":        ticker,
                 "Name":          m.get("name",""),
@@ -436,10 +456,28 @@ def render_results(results: list):
 
 
 def _send_to_analyzer(ticker: str):
-    """Send a ticker to the analyzer page."""
-    st.session_state["pending_add_ticker"] = ticker
-    st.session_state["auto_analyze"]       = True
-    st.session_state["nav_page"]           = "analyzer"
+    """
+    Send a ticker to the analyzer page and auto-run analysis.
+    Preserves any existing tickers already in the analyzer slots.
+    """
+    slots = st.session_state.get("ticker_slots", ["","","","",""])
+    # Add only if not already present
+    if ticker not in slots:
+        added = False
+        for si in range(5):
+            if not slots[si]:
+                slots[si] = ticker
+                added = True
+                break
+        if not added:
+            # All 5 slots full: insert at top, shift others
+            slots = [ticker] + list(slots[:4])
+    st.session_state["ticker_slots"] = slots
+    # Clear widget keys so the seeding loop re-applies fresh values
+    for ki in range(5):
+        st.session_state.pop(f"t{ki}", None)
+    st.session_state["nav_page"]     = "analyzer"
+    st.session_state["auto_analyze"] = True
     st.rerun()
 
 
@@ -452,7 +490,7 @@ def render_results_chart(results: list):
 
     tickers  = [r[0] for r in results]
     scores   = [r[2] for r in results]
-    upsides  = [r[4] * 100 for r in results]
+    upsides  = [r[4] * 100 if r[4] else 0 for r in results]
     types    = [r[3] for r in results]
     names    = [r[1].get("name","") for r in results]
     mktcaps  = [r[1].get("market_cap") or 1e9 for r in results]
