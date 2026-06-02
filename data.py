@@ -80,6 +80,13 @@ def _fetch_ticker_data_impl(ticker: str) -> dict:
         # info is the most likely to be rate-limited
         info = _retry(lambda: stock.info, label=ticker)
 
+        # Guard: yfinance can return None for info on some tickers
+        if not info or not isinstance(info, dict):
+            return {"ticker": ticker, "error":
+                    f"No data returned for '{ticker}'. "
+                    "The ticker may be delisted, or try adding the exchange suffix "
+                    "(e.g. ASML.AS, SHEL.L, SAP.DE)."}
+
         price = info.get("currentPrice") or info.get("regularMarketPrice") or info.get("previousClose")
         if not price or float(price) == 0:
             return {"ticker": ticker, "error":

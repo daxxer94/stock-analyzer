@@ -2447,36 +2447,42 @@ def main():
                     continue
 
                 info = data.get("info") or {}
-                # Guard: info must be a non-empty dict with price data
+                # Guard: info must be a non-empty dict
                 if not info or not isinstance(info, dict):
                     results[ticker] = {"error": f"No data returned for '{ticker}'. Check the ticker symbol."}
                     continue
-                peers_list = get_peers(ticker, info, peer_overrides.get(ticker, ""))
-                peer_data  = fetch_peer_metrics(tuple(peers_list)) if peers_list else {}
 
-                fund       = analyze_fundamentals(data)
-                dcf        = run_dcf_models(data, rfr, fixed_rate)
-                ind        = calculate_indicators(data.get("hist_2y", pd.DataFrame()))
-                cp         = get_current_price(info)
-                sigs       = generate_signals(ind, cp)
-                valuation  = get_valuation_ratios(info)
-                comparison = compare_with_peers(valuation, peer_data, ticker)
-                sentiment  = analyze_sentiment(data)
+                try:
+                    peers_list = get_peers(ticker, info, peer_overrides.get(ticker, ""))
+                    peer_data  = fetch_peer_metrics(tuple(peers_list)) if peers_list else {}
 
-                cfs        = fund.get("cashflows", {})
-                fs, fmsgs  = score_fundamental(info, cfs)
-                vs, vmsgs  = score_valuation(info, dcf)
-                tech_score = sigs.get("overall_score", 5.0)
-                ss, smsgs  = score_sentiment(sentiment)
-                scoring    = calculate_composite(fs, vs, tech_score, ss)
-                scoring["fund_msgs"] = fmsgs; scoring["val_msgs"] = vmsgs; scoring["sent_msgs"] = smsgs
+                    fund       = analyze_fundamentals(data)
+                    dcf        = run_dcf_models(data, rfr, fixed_rate)
+                    ind        = calculate_indicators(data.get("hist_2y", pd.DataFrame()))
+                    cp         = get_current_price(info)
+                    sigs       = generate_signals(ind, cp)
+                    valuation  = get_valuation_ratios(info)
+                    comparison = compare_with_peers(valuation, peer_data, ticker)
+                    sentiment  = analyze_sentiment(data) or {}
 
-                results[ticker] = {
-                    "data": data, "peers": peers_list, "peer_data": peer_data,
-                    "fund": fund, "dcf": dcf, "indicators": ind, "signals": sigs,
-                    "valuation": valuation, "comparison": comparison,
-                    "sentiment": sentiment, "scoring": scoring,
-                }
+                    cfs        = (fund or {}).get("cashflows", {})
+                    fs, fmsgs  = score_fundamental(info, cfs)
+                    vs, vmsgs  = score_valuation(info, dcf)
+                    tech_score = (sigs or {}).get("overall_score", 5.0)
+                    ss, smsgs  = score_sentiment(sentiment)
+                    scoring    = calculate_composite(fs, vs, tech_score, ss)
+                    scoring["fund_msgs"] = fmsgs
+                    scoring["val_msgs"]  = vmsgs
+                    scoring["sent_msgs"] = smsgs
+
+                    results[ticker] = {
+                        "data": data, "peers": peers_list, "peer_data": peer_data,
+                        "fund": fund, "dcf": dcf, "indicators": ind, "signals": sigs,
+                        "valuation": valuation, "comparison": comparison,
+                        "sentiment": sentiment, "scoring": scoring,
+                    }
+                except Exception as _err:
+                    results[ticker] = {"error": f"{ticker}: {_err}"}
 
             progress.progress(1.0, text="Done!")
             st.session_state["results"] = results
