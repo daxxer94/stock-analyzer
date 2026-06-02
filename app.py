@@ -2220,6 +2220,15 @@ def render_deploy_guide():
 def main():
     # ── Process pending ticker additions BEFORE any widgets render ────────────
     # Handles: peer table "Analyze" button, and any other programmatic adds
+    # ── Process pending slot clear BEFORE widgets render ─────────────────────
+    clear_slot = st.session_state.pop("pending_clear_slot", None)
+    if clear_slot is not None:
+        slots = st.session_state.get("ticker_slots", ["","","","",""])
+        slots[clear_slot] = ""
+        st.session_state["ticker_slots"] = slots
+        # Pop the widget key so it re-renders empty
+        st.session_state.pop(f"t{clear_slot}", None)
+
     pending = st.session_state.pop("pending_add_ticker", None)
     if pending:
         slots = st.session_state.get("ticker_slots", ["","","","",""])
@@ -2330,15 +2339,14 @@ def main():
                     if disp_name:
                         st.caption(f"↳ {disp_name[:30]}")
             with col_x:
-                # Show X only when slot actually has content
                 has_val = val.strip() != ""
                 if has_val and st.button("✕", key=f"clear_{i}", help="Remove"):
-                    st.session_state[f"t{i}"] = ""
-                    slots[i] = ""
-                    st.session_state["ticker_slots"] = slots
+                    # Store which slot to clear — processed at top of next run
+                    # BEFORE widgets render (same pattern as peer/screener buttons)
+                    st.session_state["pending_clear_slot"] = i
                     st.rerun()
                 elif not has_val:
-                    st.empty()   # keep column layout consistent
+                    st.empty()
             v = val.strip().upper()
             new_slots.append(v)
             if v:
