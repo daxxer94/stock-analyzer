@@ -16,14 +16,16 @@ import streamlit as st   # only used for @st.cache_data on peer metrics
 _CACHE: dict = {}
 
 def _ttl_cache(key: str, ttl: int, fn):
-    """Fetch from cache if fresh, else call fn() and store result."""
+    """Fetch from cache if fresh, else call fn() and store result.
+    Only caches non-None results so a failure doesn't poison the cache."""
     now = time.time()
     if key in _CACHE:
         val, ts = _CACHE[key]
         if now - ts < ttl:
             return val
     result = fn()
-    _CACHE[key] = (result, now)
+    if result is not None:
+        _CACHE[key] = (result, now)
     return result
 
 

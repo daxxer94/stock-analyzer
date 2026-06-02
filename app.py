@@ -2337,7 +2337,12 @@ def main():
                 if val.strip():
                     disp_name = TICKER_NAMES.get(val.strip().upper(), "")
                     if disp_name:
-                        st.caption(f"↳ {disp_name[:30]}")
+                        # Show full name - wrap to next line naturally
+                        st.markdown(
+                            f"<div style='font-size:11px;color:#68d391;margin-top:2px;"
+                            f"line-height:1.3;word-break:break-word'>↳ {disp_name}</div>",
+                            unsafe_allow_html=True
+                        )
             with col_x:
                 has_val = val.strip() != ""
                 if has_val and st.button("✕", key=f"clear_{i}", help="Remove"):
@@ -2433,11 +2438,19 @@ def main():
             for idx, ticker in enumerate(ticker_inputs):
                 progress.progress(idx / n, text=f"Analysing {ticker}…")
                 data = fetch_ticker_data(ticker)
+                # Guard: data could be None if TTL cache had an exception
+                if not data or not isinstance(data, dict):
+                    results[ticker] = {"error": f"Failed to fetch data for '{ticker}'. Please try again."}
+                    continue
                 if data.get("error"):
                     results[ticker] = {"error": data["error"]}
                     continue
 
-                info = data["info"]
+                info = data.get("info") or {}
+                # Guard: info must be a non-empty dict with price data
+                if not info or not isinstance(info, dict):
+                    results[ticker] = {"error": f"No data returned for '{ticker}'. Check the ticker symbol."}
+                    continue
                 peers_list = get_peers(ticker, info, peer_overrides.get(ticker, ""))
                 peer_data  = fetch_peer_metrics(tuple(peers_list)) if peers_list else {}
 
