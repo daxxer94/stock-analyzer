@@ -31,7 +31,6 @@ from sec_data            import (fetch_news, build_news_search_links, fetch_sec_
                                   fetch_sec_filings, extract_customers_suppliers,
                                   generate_swot, get_regulatory_info)
 from screener_ui         import render_screener_page
-from yf_health           import run_health_check
 from cca                 import run_cca, format_cca_peer_table
 
 # ─── Page config ─────────────────────────────────────────────────────────────
@@ -2263,9 +2262,6 @@ def render_deploy_guide():
 def main():
     # ── Process pending ticker additions BEFORE any widgets render ────────────
     # Handles: peer table "Analyze" button, and any other programmatic adds
-    # ── yfinance API health check (once per day) ─────────────────────────────
-    run_health_check()
-
     # ── Process pending slot clear BEFORE widgets render ─────────────────────
     clear_slot = st.session_state.pop("pending_clear_slot", None)
     if clear_slot is not None:
