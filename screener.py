@@ -286,10 +286,31 @@ def _fetch_candidate_metrics(tickers: list, progress_cb=None) -> dict:
             # yfinance 1.4.0: get price from fast_info, fundamentals from info
             price = 0.0
             try:
-                fi = _retry(lambda t=t_obj: t.fast_info)
-                price = float(getattr(fi, "last_price", 0) or getattr(fi, "previous_close", 0) or 0)
+                fi = t_obj.fast_info
+                for _a in ("last_price", "previous_close"):
+                    try:
+                        v = getattr(fi, _a)
+                        if v and float(v) > 0:
+                            price = float(v); break
+                    except Exception:
+                        pass
+                if not price:
+                    for _k in ("lastPrice", "previousClose", "regularMarketPreviousClose"):
+                        try:
+                            v = fi.get(_k)
+                            if v and float(v) > 0:
+                                price = float(v); break
+                        except Exception:
+                            pass
             except Exception:
                 pass
+            if not price:
+                try:
+                    _h = t_obj.history(period="5d")
+                    if _h is not None and not _h.empty:
+                        price = float(_h["Close"].dropna().iloc[-1])
+                except Exception:
+                    pass
             if not price or price <= 0:
                 continue
             try:

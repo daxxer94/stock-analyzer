@@ -83,24 +83,49 @@ def _fetch_ticker_data_impl(ticker: str) -> dict:
     try:
         stock = yf.Ticker(ticker)
 
-        # ── Step 1: fast_info for price/market data ───────────────────────────
-        fast = None
+        # ── Step 1: price — try fast_info (multiple access styles) then history ─
+        fast  = None
+        price = None
+
         try:
-            fast = _retry(lambda: stock.fast_info, label=f"{ticker}/fast_info")
+            fast = stock.fast_info   # returns lazy object — no network yet
         except Exception:
             pass
 
-        # Extract price from fast_info
-        price = None
         if fast is not None:
-            for attr in ("last_price", "previous_close", "regular_market_previous_close"):
+            # Try 1: Python attribute access (snake_case)
+            for py_attr in ("last_price", "previous_close", "regular_market_previous_close"):
                 try:
-                    v = getattr(fast, attr, None)
+                    v = getattr(fast, py_attr)
                     if v and float(v) > 0:
                         price = float(v)
                         break
                 except Exception:
                     pass
+
+            # Try 2: dict-style access (camelCase — yfinance 1.4.0 internal keys)
+            if not price:
+                for dict_key in ("lastPrice", "previousClose",
+                                 "regularMarketPreviousClose", "open"):
+                    try:
+                        v = fast.get(dict_key)
+                        if v and float(v) > 0:
+                            price = float(v)
+                            break
+                    except Exception:
+                        pass
+
+        # Try 3: history as final fallback (most reliable across all versions)
+        if not price:
+            try:
+                hist_tmp = _retry(
+                    lambda: stock.history(period="5d"),
+                    label=f"{ticker}/hist_fallback"
+                )
+                if hist_tmp is not None and not hist_tmp.empty:
+                    price = float(hist_tmp["Close"].dropna().iloc[-1])
+            except Exception:
+                pass
 
         if not price or price == 0:
             return {"ticker": ticker, "error":
@@ -291,10 +316,32 @@ def fetch_peer_metrics(tickers_tuple: tuple) -> dict:
             price = 0.0
             fi = None
             try:
-                fi    = _retry(lambda to=t_obj: to.fast_info, label=t)
-                price = float(getattr(fi, "last_price", 0) or getattr(fi, "previous_close", 0) or 0)
+                fi = t_obj.fast_info
+                # Try Python attrs first, then dict keys, then history
+                for _a in ("last_price", "previous_close"):
+                    try:
+                        v = getattr(fi, _a)
+                        if v and float(v) > 0:
+                            price = float(v); break
+                    except Exception:
+                        pass
+                if not price:
+                    for _k in ("lastPrice", "previousClose", "regularMarketPreviousClose"):
+                        try:
+                            v = fi.get(_k)
+                            if v and float(v) > 0:
+                                price = float(v); break
+                        except Exception:
+                            pass
             except Exception:
                 pass
+            if not price:
+                try:
+                    _h = t_obj.history(period="5d")
+                    if _h is not None and not _h.empty:
+                        price = float(_h["Close"].dropna().iloc[-1])
+                except Exception:
+                    pass
             if not price:
                 continue
             try:
