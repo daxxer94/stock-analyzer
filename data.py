@@ -72,26 +72,84 @@ def _safe_get_retry(stock, attr, ticker=""):
 # ─── Main ticker fetch ────────────────────────────────────────────────────────
 
 def _fetch_ticker_data_impl(ticker: str) -> dict:
-    """Fetch all relevant data for a single ticker, with rate-limit retries."""
+    """
+    Fetch all relevant data for a single ticker, with rate-limit retries.
+
+    yfinance 1.4.0 BREAKING CHANGE: price fields (currentPrice, regularMarketPrice,
+    marketCap, dayHigh, dayLow, etc.) were REMOVED from stock.info and moved to
+    stock.fast_info. We fetch both and merge them into a single unified info dict.
+    """
     ticker = ticker.upper().strip()
     try:
         stock = yf.Ticker(ticker)
 
-        # info is the most likely to be rate-limited
-        info = _retry(lambda: stock.info, label=ticker)
+        # ── Step 1: fast_info for price/market data ───────────────────────────
+        fast = None
+        try:
+            fast = _retry(lambda: stock.fast_info, label=f"{ticker}/fast_info")
+        except Exception:
+            pass
 
-        # Guard: yfinance can return None for info on some tickers
-        if not info or not isinstance(info, dict):
-            return {"ticker": ticker, "error":
-                    f"No data returned for '{ticker}'. "
-                    "The ticker may be delisted, or try adding the exchange suffix "
-                    "(e.g. ASML.AS, SHEL.L, SAP.DE)."}
+        # Extract price from fast_info
+        price = None
+        if fast is not None:
+            for attr in ("last_price", "previous_close", "regular_market_previous_close"):
+                try:
+                    v = getattr(fast, attr, None)
+                    if v and float(v) > 0:
+                        price = float(v)
+                        break
+                except Exception:
+                    pass
 
-        price = info.get("currentPrice") or info.get("regularMarketPrice") or info.get("previousClose")
-        if not price or float(price) == 0:
+        if not price or price == 0:
             return {"ticker": ticker, "error":
                     f"Could not find price data for '{ticker}'. "
-                    "Check the symbol — EU examples: ASML.AS, SHEL.L, SAP.DE, TTE.PA"}
+                    "Check the symbol (e.g. ASML.AS · SHEL.L · SAP.DE · TTE.PA · 7203.T · 005930.KS)."}
+
+        # ── Step 2: info dict for fundamentals ────────────────────────────────
+        info = {}
+        try:
+            raw_info = _retry(lambda: stock.info, label=ticker)
+            if isinstance(raw_info, dict):
+                info = raw_info
+        except Exception:
+            pass
+
+        # ── Step 3: Merge fast_info price fields back into info dict ──────────
+        # yfinance 1.4.0 removed these from info — we re-add them from fast_info
+        if fast is not None:
+            fast_map = {
+                "currentPrice":          "last_price",
+                "regularMarketPrice":    "last_price",
+                "previousClose":         "previous_close",
+                "open":                  "open",
+                "dayHigh":               "day_high",
+                "dayLow":                "day_low",
+                "marketCap":             "market_cap",
+                "fiftyTwoWeekHigh":      "year_high",
+                "fiftyTwoWeekLow":       "year_low",
+                "fiftyDayAverage":       "fifty_day_average",
+                "twoHundredDayAverage":  "two_hundred_day_average",
+                "currency":              "currency",
+                "exchange":              "exchange",
+                "volume":                "last_volume",
+                "sharesOutstanding":     "shares",
+            }
+            for info_key, fi_attr in fast_map.items():
+                if info_key not in info or not info[info_key]:
+                    try:
+                        v = getattr(fast, fi_attr, None)
+                        if v is not None:
+                            info[info_key] = v
+                    except Exception:
+                        pass
+
+        # Ensure price is always accessible
+        if not info.get("currentPrice"):
+            info["currentPrice"] = price
+        if not info.get("regularMarketPrice"):
+            info["regularMarketPrice"] = price
 
         # Stagger requests to avoid hammering Yahoo Finance
         hist_2y = _retry(lambda: stock.history(period="2y"), label=f"{ticker}/hist_2y")
@@ -228,10 +286,27 @@ def fetch_peer_metrics(tickers_tuple: tuple) -> dict:
         if i > 0:
             time.sleep(0.3)
         try:
-            info = _retry(lambda ticker=t: yf.Ticker(ticker).info, label=t)
-            price = info.get("currentPrice") or info.get("regularMarketPrice") or 0
+            t_obj = yf.Ticker(t)
+            # yfinance 1.4.0: price from fast_info
+            price = 0.0
+            fi = None
+            try:
+                fi    = _retry(lambda to=t_obj: to.fast_info, label=t)
+                price = float(getattr(fi, "last_price", 0) or getattr(fi, "previous_close", 0) or 0)
+            except Exception:
+                pass
             if not price:
                 continue
+            try:
+                info = _retry(lambda to=t_obj: to.info, label=t) or {}
+            except Exception:
+                info = {}
+            # Inject price into info dict
+            if not info.get("currentPrice"):
+                info["currentPrice"] = price
+            if fi and not info.get("marketCap"):
+                try: info["marketCap"] = getattr(fi, "market_cap", None)
+                except Exception: pass
             result[t] = {
                 "name":             info.get("shortName", t),
                 "sector":           info.get("sector", ""),
@@ -370,10 +445,15 @@ def _safe_float(v) -> float | None:
 
 
 def get_current_price(info: dict) -> float:
-    for k in ["currentPrice", "regularMarketPrice", "previousClose", "open"]:
-        v = info.get(k)
-        if v and float(v) > 0:
-            return float(v)
+    """Extract current price - checks all fields including yfinance 1.4.0 fast_info merged keys."""
+    for k in ["currentPrice", "regularMarketPrice", "previousClose",
+              "open", "regularMarketPreviousClose", "last_price"]:
+        try:
+            v = info.get(k) if info else None
+            if v and float(v) > 0:
+                return float(v)
+        except Exception:
+            pass
     return 0.0
 
 

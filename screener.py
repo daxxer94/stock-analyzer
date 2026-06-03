@@ -188,7 +188,10 @@ class ScreenerCriteria:
 # ─── Core screener logic ──────────────────────────────────────────────────────
 
 def _build_equity_query(criteria: ScreenerCriteria):
-    """Build a yfinance EquityQuery from criteria. Returns None if no filters."""
+    """
+    Build a yfinance EquityQuery from criteria.
+    Uses field names valid in yfinance 1.4.0.
+    """
     operands = []
 
     # Region
@@ -212,23 +215,22 @@ def _build_equity_query(criteria: ScreenerCriteria):
         ind_queries = [yf.EquityQuery('eq', ['industry', i]) for i in criteria.industries]
         operands.append(yf.EquityQuery('or', ind_queries))
 
-    # Market cap
+    # Market cap — use intradaymarketcap (still valid in 1.4.0)
     if criteria.min_mktcap > 0 or criteria.max_mktcap < 1e14:
         lo = max(criteria.min_mktcap, 1e6)
         hi = min(criteria.max_mktcap, 1e14)
         operands.append(yf.EquityQuery('btwn', ['intradaymarketcap', lo, hi]))
 
-    # P/E ratio
+    # P/E ratio — yfinance 1.4.0 field name
     if criteria.max_pe < 999:
         operands.append(yf.EquityQuery('lt', ['peratio.lasttwelvemonths', criteria.max_pe]))
 
-    # Beta
+    # Beta — still valid
     if criteria.min_beta > 0 or criteria.max_beta < 9:
         operands.append(yf.EquityQuery('btwn', ['beta', criteria.min_beta, criteria.max_beta]))
 
-    if not operands:
-        # At minimum filter to equities with market cap > $10M
-        operands.append(yf.EquityQuery('gt', ['intradaymarketcap', 10e6]))
+    # Always require a minimum market cap so we get real companies
+    operands.append(yf.EquityQuery('gt', ['intradaymarketcap', 50e6]))
 
     if len(operands) == 1:
         return operands[0]
@@ -277,14 +279,31 @@ def _fetch_candidate_metrics(tickers: list, progress_cb=None) -> dict:
     for i, ticker in enumerate(tickers):
         if progress_cb:
             progress_cb(i, total, ticker)
-        # Stagger to avoid rate limiting
         if i > 0:
             time.sleep(0.5 if i % 5 != 0 else 1.2)
         try:
-            info = _retry(lambda t=ticker: yf.Ticker(t).info)
-            price = info.get("currentPrice") or info.get("regularMarketPrice") or 0
-            if not price or float(price) <= 0:
+            t_obj = yf.Ticker(ticker)
+            # yfinance 1.4.0: get price from fast_info, fundamentals from info
+            price = 0.0
+            try:
+                fi = _retry(lambda t=t_obj: t.fast_info)
+                price = float(getattr(fi, "last_price", 0) or getattr(fi, "previous_close", 0) or 0)
+            except Exception:
+                pass
+            if not price or price <= 0:
                 continue
+            try:
+                info = _retry(lambda t=t_obj: t.info) or {}
+            except Exception:
+                info = {}
+            # Merge fast_info price fields into info
+            if not info.get("currentPrice"):
+                info["currentPrice"] = price
+            if not info.get("marketCap"):
+                try:
+                    info["marketCap"] = getattr(fi, "market_cap", None)
+                except Exception:
+                    pass
             results[ticker] = {
                 "name":             info.get("shortName", ticker),
                 "sector":           info.get("sector", ""),
