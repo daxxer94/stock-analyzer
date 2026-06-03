@@ -329,10 +329,13 @@ def calculate_wacc(info: dict, income: pd.DataFrame,
     ebit_v = safe_val(income, ["Operating Income", "EBIT", "Ebit"])
 
     if total_debt > 0 and interest > 0:
-        kd_pretax = min(interest / total_debt, 0.15)  # cap at 15%
-    elif ebit_v and total_debt > 0:
-        # Synthetic rating: interest coverage → spread
-        ic = ebit_v / max(interest, ebit_v * 0.01)  # avoid div/0
+        kd_pretax = min(interest / total_debt, 0.15)
+    elif ebit_v is not None and total_debt > 0:
+        # Synthetic rating from interest coverage ratio.
+        # For loss-making companies ebit_v < 0 — use absolute EBIT as base,
+        # ensure denominator is always > 0 with a floor of 1.
+        safe_denom = max(abs(float(interest or 0)), abs(float(ebit_v)) * 0.01, 1.0)
+        ic = float(ebit_v) / safe_denom  # negative IC signals distress → widest spread
         if ic > 12.5:   spread = 0.0050
         elif ic > 9.5:  spread = 0.0065
         elif ic > 7.5:  spread = 0.0085
@@ -387,8 +390,10 @@ def _dcf_engine(base_fcf: float, discount_rate: float, stage1_growth: float,
     """Core DCF: explicit forecast + terminal value (Gordon Growth)."""
     if discount_rate <= terminal_growth:
         discount_rate = terminal_growth + 0.02
-    if base_fcf == 0:
+    if not base_fcf or abs(base_fcf) < 1:
         return {"error": "Base FCF is zero — cannot compute DCF"}
+    if discount_rate == terminal_growth:
+        terminal_growth = discount_rate - 0.005
 
     fcf       = base_fcf
     pv_s1     = 0.0
@@ -707,9 +712,14 @@ def dcf_path_to_profitability(data: dict, info: dict, rfr: float,
     current_nm   = float(info.get("profitMargins") or 0)
     current_om   = float(info.get("operatingMargins") or 0)
     capex_ratio  = 0.08  # default CapEx as % of revenue
-    if cfs.get("capex") and current_rev > 0:
-        avg_capex = abs(np.mean([v for v in cfs["capex"][:3] if v]))
-        capex_ratio = min(0.25, avg_capex / current_rev)
+    if cfs.get("capex") and current_rev > 1:
+        try:
+            vals = [abs(v) for v in cfs["capex"][:3] if v]
+            if vals:
+                avg_capex = np.mean(vals)
+                capex_ratio = min(0.25, avg_capex / current_rev)
+        except (ZeroDivisionError, Exception):
+            pass
 
     # ── Growth assumptions ───────────────────────────────────────────────────
     sector   = info.get("sector", "")
@@ -870,11 +880,17 @@ def run_dcf_models(data: dict, rfr: float, fixed_rate: float) -> dict:
         # Run P2P for unprofitable or near-zero FCF companies
         p2p_result = dcf_path_to_profitability(data, info, rfr, shares, net_cash)
 
+    def _safe_model(fn, *args, name=""):
+        try:
+            return fn(*args)
+        except Exception as e:
+            return {"error": f"{name}: {e}"}
+
     return {
-        "wacc":       dcf_wacc(ufcf_list, wacc_c, shares, net_cash, minority_int, g_rates),
-        "capm":       dcf_capm(ufcf_list, info, rfr, shares, net_cash, minority_int, g_rates),
-        "fixed":      dcf_fixed(ufcf_list, fixed_rate, shares, net_cash, minority_int, g_rates),
-        "two_stage":  dcf_two_stage(ufcf_list, info, rfr, shares, net_cash, minority_int, g_rates),
+        "wacc":       _safe_model(dcf_wacc,       ufcf_list, wacc_c, shares, net_cash, minority_int, g_rates, name="WACC"),
+        "capm":       _safe_model(dcf_capm,       ufcf_list, info, rfr, shares, net_cash, minority_int, g_rates, name="CAPM"),
+        "fixed":      _safe_model(dcf_fixed,      ufcf_list, fixed_rate, shares, net_cash, minority_int, g_rates, name="Fixed"),
+        "two_stage":  _safe_model(dcf_two_stage,  ufcf_list, info, rfr, shares, net_cash, minority_int, g_rates, name="Two-Stage"),
         "p2p":        p2p_result,
         "wacc_components":  wacc_c,
         "growth_rates":     g_rates,
@@ -897,14 +913,27 @@ def growth_rates_from_series(series: dict) -> list:
     vals = [v for _, v in sorted(series.items(), reverse=True) if v]
     if len(vals) < 2:
         return []
-    return [(vals[i] / vals[i+1]) - 1 for i in range(len(vals)-1)
-            if vals[i+1] and vals[i+1] != 0]
+    rates = []
+    for i in range(len(vals) - 1):
+        try:
+            d = vals[i+1]
+            if d and abs(d) > 1:   # avoid near-zero denominators
+                rates.append((vals[i] / d) - 1)
+        except (ZeroDivisionError, TypeError):
+            pass
+    return rates
 
 
 def margin_series(numerator: dict, denominator: dict) -> dict:
-    return {yr: numerator[yr] / denominator[yr]
-            for yr in numerator
-            if yr in denominator and denominator[yr] and denominator[yr] != 0}
+    out = {}
+    for yr in numerator:
+        try:
+            d = denominator.get(yr)
+            if d and abs(d) > 1:
+                out[yr] = numerator[yr] / d
+        except (ZeroDivisionError, TypeError):
+            pass
+    return out
 
 
 def analyze_fundamentals(data: dict) -> dict:
