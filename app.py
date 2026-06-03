@@ -1482,11 +1482,15 @@ def render_stock_tab(ticker, data, dcf, fund, indicators, signals,
         # ── Path-to-Profitability model (shown for loss-making companies) ────
         p2p = dcf.get("p2p", {})
         if p2p and not p2p.get("error") and p2p.get("intrinsic_value"):
+            # Currency helpers (scoped here since P2P section needs them)
+            _native = info.get("currency", "USD")
+            _disp   = st.session_state.get("display_ccy_code", _native)
+            _rates  = st.session_state.get("fx_rates", {})
             with st.expander("🌱 Path-to-Profitability DCF — Revenue-Based Model", expanded=True):
                 iv_p2p  = p2p["intrinsic_value"]
                 up_p2p  = (iv_p2p - cp) / cp if cp > 0 else 0
                 uc      = "#00C853" if up_p2p >= 0 else "#EF5350"
-                disp_iv = fmt_currency(iv_p2p, native_ccy, disp_ccy, rates)
+                disp_iv = fmt_currency(iv_p2p, _native, _disp, _rates)
 
                 col1, col2, col3 = st.columns(3)
                 col1.metric("P2P Implied Price", disp_iv,
@@ -1505,11 +1509,11 @@ def render_stock_tab(ticker, data, dcf, fund, indicators, signals,
                 if details:
                     df_p2p = pd.DataFrame([{
                         "Year":        d["year"],
-                        "Revenue":     fmt_currency(d["revenue"], native_ccy, disp_ccy, rates),
+                        "Revenue":     fmt_currency(d["revenue"], _native, _disp, _rates),
                         "Rev Growth":  f"{d['rev_growth']:.1%}",
                         "Op Margin":   f"{d['op_margin']:.1%}",
-                        "Est. FCF":    fmt_currency(d["fcf"], native_ccy, disp_ccy, rates),
-                        "PV of FCF":   fmt_currency(d["pv"],  native_ccy, disp_ccy, rates),
+                        "Est. FCF":    fmt_currency(d["fcf"], _native, _disp, _rates),
+                        "PV of FCF":   fmt_currency(d["pv"],  _native, _disp, _rates),
                     } for d in details])
                     st.dataframe(df_p2p, use_container_width=True, hide_index=True)
 
