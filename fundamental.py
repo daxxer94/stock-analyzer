@@ -288,10 +288,15 @@ def _ufcf_cagr(ufcf_list: list) -> float:
         return 0.05
     rates = []
     for i in range(len(ufcf_list) - 1):
-        a, b = ufcf_list[i], ufcf_list[i + 1]
-        if a and b and b > 0 and a > 0:
-            rates.append(a / b - 1)
-    return float(np.median(rates)) if rates else 0.05
+        try:
+            a, b = ufcf_list[i], ufcf_list[i + 1]
+            if a and b and abs(b) > 1 and a > 0:  # avoid div-by-zero and near-zero
+                rates.append(a / b - 1)
+        except (ZeroDivisionError, TypeError):
+            pass
+    if not rates:
+        return 0.05
+    return float(np.clip(np.median(rates), -0.50, 1.00))
 
 
 # ─── WACC ─────────────────────────────────────────────────────────────────────
@@ -354,8 +359,8 @@ def calculate_wacc(info: dict, income: pd.DataFrame,
     # Capital weights (market-value weights)
     market_cap = float(info.get("marketCap") or 0)
     total_v    = market_cap + total_debt
-    w_e = market_cap / total_v if total_v > 0 else 1.0
-    w_d = total_debt / total_v if total_v > 0 else 0.0
+    w_e = market_cap / total_v if total_v > 1 else 1.0
+    w_d = total_debt / total_v if total_v > 1 else 0.0
 
     wacc = w_e * ke + w_d * kd
 
@@ -382,6 +387,8 @@ def _dcf_engine(base_fcf: float, discount_rate: float, stage1_growth: float,
     """Core DCF: explicit forecast + terminal value (Gordon Growth)."""
     if discount_rate <= terminal_growth:
         discount_rate = terminal_growth + 0.02
+    if base_fcf == 0:
+        return {"error": "Base FCF is zero — cannot compute DCF"}
 
     fcf       = base_fcf
     pv_s1     = 0.0
@@ -588,6 +595,230 @@ def build_sensitivity_table(base_fcf: float, wacc_base: float,
     }
 
 
+
+# ─── Industry Margin Benchmarks ───────────────────────────────────────────────
+
+# Target mature net margins by sector (for Path-to-Profitability model)
+SECTOR_TARGET_MARGINS = {
+    "Technology":              0.22,
+    "Software":                0.25,
+    "Semiconductors":          0.20,
+    "Healthcare":              0.15,
+    "Biotechnology":           0.18,
+    "Financial Services":      0.22,
+    "Consumer Cyclical":       0.07,
+    "Consumer Defensive":      0.08,
+    "Energy":                  0.10,
+    "Industrials":             0.10,
+    "Communication Services":  0.14,
+    "Basic Materials":         0.09,
+    "Real Estate":             0.18,
+    "Utilities":               0.12,
+    "Automotive":              0.06,
+    "Electric Vehicles":       0.07,
+    "Aerospace & Defense":     0.08,
+    "Retail":                  0.04,
+    "Restaurant":              0.10,
+    "E-commerce":              0.06,
+}
+
+# Revenue growth rate by maturity stage
+INDUSTRY_GROWTH_BENCHMARKS = {
+    "Technology":              0.14,
+    "Software":                0.18,
+    "Semiconductors":          0.12,
+    "Healthcare":              0.10,
+    "Biotechnology":           0.12,
+    "Financial Services":      0.08,
+    "Consumer Cyclical":       0.07,
+    "Consumer Defensive":      0.05,
+    "Energy":                  0.05,
+    "Industrials":             0.07,
+    "Communication Services":  0.08,
+    "Electric Vehicles":       0.20,
+    "Automotive":              0.05,
+    "Retail":                  0.05,
+    "default":                 0.08,
+}
+
+
+def _get_target_margin(info: dict) -> tuple[float, str]:
+    """Return (target_net_margin, rationale) based on sector/industry."""
+    sector   = info.get("sector", "")
+    industry = info.get("industry", "")
+
+    # Industry-specific overrides
+    industry_l = industry.lower()
+    if "electric" in industry_l or "ev" in industry_l:
+        return 0.07, "EV/auto industry mature margin ~7%"
+    if "software" in industry_l or "saas" in industry_l:
+        return 0.25, "Software/SaaS mature margin ~25%"
+    if "semiconductor" in industry_l:
+        return 0.20, "Semiconductor mature margin ~20%"
+    if "biotech" in industry_l:
+        return 0.18, "Biotech/pharma mature margin ~18%"
+    if "retail" in industry_l:
+        return 0.04, "Retail mature margin ~4%"
+    if "restaurant" in industry_l:
+        return 0.10, "Restaurant mature margin ~10%"
+
+    # Sector fallback
+    target = SECTOR_TARGET_MARGINS.get(sector, 0.10)
+    return target, f"{sector} sector mature margin ~{target:.0%}"
+
+
+def dcf_path_to_profitability(data: dict, info: dict, rfr: float,
+                               shares: float, net_cash: float) -> dict:
+    """
+    Path-to-Profitability DCF — designed for currently unprofitable companies.
+
+    Methodology:
+      1. Start from current revenue (not FCF which is negative)
+      2. Project revenue growth using analyst estimates + industry benchmarks
+      3. Model margin improvement trajectory toward sector-normal operating margins
+         (companies typically reach break-even ~3-5 years, mature margins ~7-10 years)
+      4. Estimate FCF from projected EBITDA margins and CapEx ratios
+      5. Discount projected FCFs back at CAPM cost of equity
+      6. Add terminal value once the company reaches positive sustainable FCF
+
+    Macro/micro factors considered:
+      - Interest rate environment (higher rates → higher discount rate)
+      - Beta (company-specific systematic risk)
+      - Industry margin benchmarks (realistic ceiling)
+      - Analyst revenue estimates (forward-looking, not just historical)
+    """
+    income   = data.get("income_stmt",   pd.DataFrame())
+    balance  = data.get("balance_sheet", pd.DataFrame())
+    cashflow = data.get("cash_flow",     pd.DataFrame())
+
+    inc = get_income_series(income)
+    bal = get_balance_series(balance)
+    cfs = get_cashflow_data(cashflow)
+
+    # ── Current financials ───────────────────────────────────────────────────
+    rev_series = sorted(inc.get("revenue", {}).items(), reverse=True)
+    if not rev_series:
+        return {"error": "No revenue data — Path-to-Profitability not available"}
+
+    current_rev  = abs(rev_series[0][1]) if rev_series[0][1] else 0
+    if current_rev <= 0:
+        return {"error": "Zero/negative revenue — P2P not applicable"}
+
+    current_nm   = float(info.get("profitMargins") or 0)
+    current_om   = float(info.get("operatingMargins") or 0)
+    capex_ratio  = 0.08  # default CapEx as % of revenue
+    if cfs.get("capex") and current_rev > 0:
+        avg_capex = abs(np.mean([v for v in cfs["capex"][:3] if v]))
+        capex_ratio = min(0.25, avg_capex / current_rev)
+
+    # ── Growth assumptions ───────────────────────────────────────────────────
+    sector   = info.get("sector", "")
+    industry = info.get("industry", "")
+
+    # Analyst revenue growth estimate (blended)
+    analyst_rev_g = float(info.get("revenueGrowth") or 0)
+    industry_g    = INDUSTRY_GROWTH_BENCHMARKS.get(sector,
+                    INDUSTRY_GROWTH_BENCHMARKS["default"])
+
+    # Stage 1 growth: weight analyst 60%, industry 40%
+    if analyst_rev_g > 0:
+        stage1_rev_g = analyst_rev_g * 0.60 + industry_g * 0.40
+    else:
+        stage1_rev_g = industry_g
+
+    stage1_rev_g = max(0.0, min(0.60, stage1_rev_g))  # cap 0–60%
+
+    # ── Margin trajectory ────────────────────────────────────────────────────
+    target_margin, margin_rationale = _get_target_margin(info)
+
+    # How many years to reach target margin?
+    # Assumption: linear improvement from current to target over 7-10 years
+    # Companies already close → faster; deeply unprofitable → slower
+    margin_gap     = target_margin - current_om
+    years_to_target = 8 if current_om < -0.15 else (6 if current_om < 0 else 5)
+
+    # ── Discount rate (CAPM) ─────────────────────────────────────────────────
+    beta      = float(info.get("beta") or 1.5)  # unprofitable firms tend higher beta
+    mktcap    = float(info.get("marketCap") or 1e9)
+    size_prem = 0.040 if mktcap < 300e6 else (0.025 if mktcap < 2e9 else 0.012)
+    r         = rfr + beta * 0.055 + size_prem
+    r         = max(0.08, min(0.25, r))  # bound to reasonable range
+
+    terminal_g = 0.025
+
+    # ── 10-year explicit forecast ─────────────────────────────────────────────
+    cashflows   = []
+    rev         = current_rev
+    stage2_g    = max(0.04, stage1_rev_g * 0.50)  # fade in years 6-10
+
+    pv_total    = 0.0
+    cf_details  = []
+    first_positive_yr = None
+
+    for yr in range(1, 11):
+        # Revenue growth: stage 1 (yrs 1-5) → stage 2 (yrs 6-10)
+        g = stage1_rev_g if yr <= 5 else stage2_g
+        rev = rev * (1 + g)
+
+        # Margin: linear ramp toward target_margin
+        progress    = min(1.0, yr / years_to_target)
+        op_margin   = current_om + progress * margin_gap
+        # Net margin ≈ operating margin × (1 - tax_rate) once profitable
+        tax_rate    = 0.21 if op_margin > 0 else 0.0
+        est_fcf     = rev * op_margin * (1 - tax_rate) - rev * capex_ratio
+
+        pv          = est_fcf / (1 + r) ** yr
+        pv_total   += pv
+
+        if est_fcf > 0 and first_positive_yr is None:
+            first_positive_yr = yr
+
+        cf_details.append({
+            "year":       yr,
+            "revenue":    rev,
+            "rev_growth": g,
+            "op_margin":  op_margin,
+            "fcf":        est_fcf,
+            "pv":         pv,
+        })
+
+    # Terminal value (only if FCF is positive by year 10)
+    final_fcf = cf_details[-1]["fcf"]
+    if final_fcf > 0:
+        tv    = final_fcf * (1 + terminal_g) / (r - terminal_g)
+        pv_tv = tv / (1 + r) ** 10
+    else:
+        tv    = 0
+        pv_tv = 0
+
+    total_ev    = pv_total + pv_tv
+    equity_val  = total_ev + net_cash
+    iv          = equity_val / shares if shares > 0 else None
+
+    return {
+        "model":               "Path-to-Profitability DCF",
+        "rate_label":          f"Ke={r:.2%} | Rev growth: {stage1_rev_g:.1%}→{stage2_g:.1%} | Margin: {current_om:.1%}→{target_margin:.1%}",
+        "intrinsic_value":     iv,
+        "equity_value":        equity_val,
+        "total_ev":            total_ev,
+        "pv_terminal":         pv_tv,
+        "terminal_value":      tv,
+        "tv_pct":              (pv_tv / total_ev * 100) if total_ev > 0 else 0,
+        "current_revenue":     current_rev,
+        "current_margin":      current_om,
+        "target_margin":       target_margin,
+        "margin_rationale":    margin_rationale,
+        "first_positive_yr":   first_positive_yr,
+        "stage1_growth":       stage1_rev_g,
+        "stage2_growth":       stage2_g,
+        "discount_rate":       r,
+        "fcf_type":            "Revenue-based (P2P)",
+        "cashflow_details":    cf_details,
+        "capex_ratio":         capex_ratio,
+        "industry":            industry,
+        "sector":              sector,
+    }
+
 # ─── Public Entry Point ───────────────────────────────────────────────────────
 
 def run_dcf_models(data: dict, rfr: float, fixed_rate: float) -> dict:
@@ -632,11 +863,19 @@ def run_dcf_models(data: dict, rfr: float, fixed_rate: float) -> dict:
         g_rates, shares, net_cash
     ) if base_fcf else {}
 
+    # Detect loss-making companies → add Path-to-Profitability model
+    current_nm = float(info.get("profitMargins") or 0)
+    p2p_result = {}
+    if current_nm < 0.02 or not _positive_base(ufcf_list):
+        # Run P2P for unprofitable or near-zero FCF companies
+        p2p_result = dcf_path_to_profitability(data, info, rfr, shares, net_cash)
+
     return {
         "wacc":       dcf_wacc(ufcf_list, wacc_c, shares, net_cash, minority_int, g_rates),
         "capm":       dcf_capm(ufcf_list, info, rfr, shares, net_cash, minority_int, g_rates),
         "fixed":      dcf_fixed(ufcf_list, fixed_rate, shares, net_cash, minority_int, g_rates),
         "two_stage":  dcf_two_stage(ufcf_list, info, rfr, shares, net_cash, minority_int, g_rates),
+        "p2p":        p2p_result,
         "wacc_components":  wacc_c,
         "growth_rates":     g_rates,
         "ufcf_list":        ufcf_list,

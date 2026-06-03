@@ -31,6 +31,7 @@ from sec_data            import (fetch_news, build_news_search_links, fetch_sec_
                                   fetch_sec_filings, extract_customers_suppliers,
                                   generate_swot, get_regulatory_info)
 from screener_ui         import render_screener_page
+from yf_health           import run_health_check
 from cca                 import run_cca, format_cca_peer_table
 
 # ─── Page config ─────────────────────────────────────────────────────────────
@@ -1479,6 +1480,48 @@ def render_stock_tab(ticker, data, dcf, fund, indicators, signals,
         st.caption(f"Current price: **{fmt(cp_ref, prefix='$')}** · "
                    f"FCF base: {fmt((dcf.get('fcf_list',[None])[0]), prefix='$') if dcf.get('fcf_list') else '—'}")
 
+        # ── Path-to-Profitability model (shown for loss-making companies) ────
+        p2p = dcf.get("p2p", {})
+        if p2p and not p2p.get("error") and p2p.get("intrinsic_value"):
+            with st.expander("🌱 Path-to-Profitability DCF — Revenue-Based Model", expanded=True):
+                iv_p2p  = p2p["intrinsic_value"]
+                up_p2p  = (iv_p2p - cp) / cp if cp > 0 else 0
+                uc      = "#00C853" if up_p2p >= 0 else "#EF5350"
+                disp_iv = fmt_currency(iv_p2p, native_ccy, disp_ccy, rates)
+
+                col1, col2, col3 = st.columns(3)
+                col1.metric("P2P Implied Price", disp_iv,
+                            f"{'▲' if up_p2p>=0 else '▼'} {abs(up_p2p):.1%} vs current")
+                col2.metric("Break-even Year",
+                            f"Yr {p2p.get('first_positive_yr','?')}" if p2p.get("first_positive_yr") else "Beyond 10Y",
+                            "From today")
+                col3.metric("Target Margin",
+                            f"{p2p.get('target_margin',0):.1%}",
+                            p2p.get("margin_rationale",""))
+
+                st.caption(p2p.get("rate_label",""))
+
+                # Revenue + margin projection table
+                details = p2p.get("cashflow_details", [])
+                if details:
+                    df_p2p = pd.DataFrame([{
+                        "Year":        d["year"],
+                        "Revenue":     fmt_currency(d["revenue"], native_ccy, disp_ccy, rates),
+                        "Rev Growth":  f"{d['rev_growth']:.1%}",
+                        "Op Margin":   f"{d['op_margin']:.1%}",
+                        "Est. FCF":    fmt_currency(d["fcf"], native_ccy, disp_ccy, rates),
+                        "PV of FCF":   fmt_currency(d["pv"],  native_ccy, disp_ccy, rates),
+                    } for d in details])
+                    st.dataframe(df_p2p, use_container_width=True, hide_index=True)
+
+                st.markdown("""
+> **Methodology:** This model projects revenue forward (not FCF, which is currently negative),
+> models margin improvement toward the industry benchmark, then estimates FCF from
+> projected EBITDA minus normalised CapEx. Analyst growth estimates are blended with
+> industry benchmarks. The discount rate uses CAPM with a size premium.
+> Terminal value is only added once the company reaches sustainable positive FCF.
+                """)
+
         # Sensitivity table
         sens = dcf.get("sensitivity", {})
         if sens:
@@ -2220,6 +2263,9 @@ def render_deploy_guide():
 def main():
     # ── Process pending ticker additions BEFORE any widgets render ────────────
     # Handles: peer table "Analyze" button, and any other programmatic adds
+    # ── yfinance API health check (once per day) ─────────────────────────────
+    run_health_check()
+
     # ── Process pending slot clear BEFORE widgets render ─────────────────────
     clear_slot = st.session_state.pop("pending_clear_slot", None)
     if clear_slot is not None:
@@ -2313,17 +2359,12 @@ def main():
             st.session_state["ticker_slots"] = ["", "", "", "", ""]
         slots = st.session_state["ticker_slots"]
 
-        # Always sync ticker_slots → widget keys.
-        # Streamlit clears widget keys for widgets that didn't render on the last cycle
-        # (e.g. when navigating to screener and back). Force-sync every run so
-        # text_inputs always reflect the stored slots.
+        # Seed widget keys ONLY if they don't exist yet (first load or after
+        # programmatic clear). Never overwrite a key that already exists —
+        # that would revert user edits made in the current render cycle.
         for i in range(5):
-            stored = slots[i] if i < len(slots) else ""
-            # Only overwrite if the slot has a value and widget disagrees
-            # (don't overwrite user-typed values with empty)
-            current_widget = st.session_state.get(f"t{i}", "")
-            if stored and current_widget != stored:
-                st.session_state[f"t{i}"] = stored
+            if f"t{i}" not in st.session_state:
+                st.session_state[f"t{i}"] = slots[i] if i < len(slots) else ""
 
         ticker_inputs = []
         new_slots = []
@@ -2336,11 +2377,15 @@ def main():
                 # Look up name for display
                 if val.strip():
                     disp_name = TICKER_NAMES.get(val.strip().upper(), "")
+                    # Also try live name from yfinance if not in our lookup dict
+                    if not disp_name and val.strip():
+                        disp_name = st.session_state.get(
+                            f"live_name_{val.strip().upper()}", "")
                     if disp_name:
-                        # Show full name - wrap to next line naturally
                         st.markdown(
-                            f"<div style='font-size:11px;color:#68d391;margin-top:2px;"
-                            f"line-height:1.3;word-break:break-word'>↳ {disp_name}</div>",
+                            f"<div style='font-size:11px;color:#68d391;"
+                            f"margin-top:2px;line-height:1.3'>"
+                            f"↳ {disp_name}</div>",
                             unsafe_allow_html=True
                         )
             with col_x:
@@ -2487,6 +2532,13 @@ def main():
             progress.progress(1.0, text="Done!")
             st.session_state["results"] = results
             st.session_state["rfr"]     = rfr
+            # Cache company names for sidebar display under each ticker field
+            for _t, _r in results.items():
+                if not _r.get("error"):
+                    _info = (_r.get("data") or {}).get("info") or {}
+                    _name = _info.get("shortName") or _info.get("longName") or ""
+                    if _name:
+                        st.session_state[f"live_name_{_t.upper()}"] = _name
             # Feedback for peer analysis
             new_peer = st.session_state.pop("pending_analyze", None)
             if new_peer:
