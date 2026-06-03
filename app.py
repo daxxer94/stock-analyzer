@@ -1687,8 +1687,18 @@ Each model answers a **different question**:
                 for r in comparison:
                     t = r.get("target"); m = r.get("peer_median")
                     is_pct = r["key"] in is_pct_set
-                    t_str = (f"{t*100:.1f}%" if is_pct and t else fmt(t, dec=2)) if t else "—"
-                    m_str = (f"{m*100:.1f}%" if is_pct and m else fmt(m, dec=2)) if m else "—"
+                    # Values are already normalized decimals (0.25 = 25%) — multiply by 100 for display
+                    def _pct_str(v):
+                        if v is None: return "—"
+                        try:
+                            f = float(v)
+                            # Extra guard: if value > 5 it's already a percentage (shouldn't happen after normalization)
+                            if f > 5: f = f / 100
+                            return f"{f*100:.1f}%"
+                        except Exception:
+                            return "—"
+                    t_str = _pct_str(t) if is_pct else (fmt(t, dec=2) if t else "—")
+                    m_str = _pct_str(m) if is_pct else (fmt(m, dec=2) if m else "—")
                     sig = r.get("signal","")
                     fs  = "beat" if "Above" in sig else ("miss" if "Below" in sig else "inline") if "In line" in sig else ""
                     st.markdown(tooltip_html(r["key"], r["metric"], f"{t_str}  (peers: {m_str})", fs),
@@ -1781,6 +1791,52 @@ Each model answers a **different question**:
             fig_earn = build_earnings_surprise_chart(earn_rows, ticker)
             if fig_earn.data:
                 st.plotly_chart(fig_earn, use_container_width=True)
+
+            # ── Recent analyst rating changes with dates ───────────────────
+            recs_df = data.get("recommendations")
+            if recs_df is not None and isinstance(recs_df, pd.DataFrame) and not recs_df.empty:
+                st.markdown(section_header("Recent Analyst Rating Changes"), unsafe_allow_html=True)
+
+                # GradeDate is the index; Firm, ToGrade, FromGrade, Action are columns
+                try:
+                    recs_show = recs_df.reset_index()
+                    # Rename index column if needed
+                    date_col = "GradeDate" if "GradeDate" in recs_show.columns else recs_show.columns[0]
+                    recs_show = recs_show.rename(columns={
+                        date_col:    "Date",
+                        "Firm":      "Analyst Firm",
+                        "ToGrade":   "Rating",
+                        "FromGrade": "Previous",
+                        "Action":    "Action",
+                    })
+                    # Format date column
+                    if "Date" in recs_show.columns:
+                        recs_show["Date"] = pd.to_datetime(recs_show["Date"], errors="coerce")
+                        recs_show = recs_show.dropna(subset=["Date"])
+                        recs_show = recs_show.sort_values("Date", ascending=False).head(10)
+                        recs_show["Date"] = recs_show["Date"].dt.strftime("%d %b %Y")
+                        # Age indicator
+                        cutoff_90d = pd.Timestamp.now() - pd.Timedelta(days=90)
+                        recent_ct  = (pd.to_datetime(recs_df.index, errors="coerce") >= cutoff_90d).sum()
+                    else:
+                        recent_ct = 0
+
+                    keep_cols = [c for c in ["Date","Analyst Firm","Rating","Previous","Action"] if c in recs_show.columns]
+                    st.dataframe(recs_show[keep_cols], use_container_width=True, hide_index=True)
+
+                    # Freshness indicator
+                    if recent_ct > 0:
+                        st.success(f"✅ {recent_ct} rating change{'s' if recent_ct > 1 else ''} in the last 90 days — targets are recent and relevant.")
+                    else:
+                        total = len(recs_df)
+                        if total > 0:
+                            latest = pd.to_datetime(recs_df.index, errors="coerce").max()
+                            days_ago = (pd.Timestamp.now() - latest).days if not pd.isnull(latest) else 999
+                            st.warning(f"⚠️ No analyst changes in the last 90 days. Most recent: {days_ago} days ago — price targets may be stale.")
+                        else:
+                            st.info("No recent analyst rating data available.")
+                except Exception:
+                    pass
 
             st.markdown(section_header("Ownership & Short Interest"), unsafe_allow_html=True)
             for key, lbl, val in [

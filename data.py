@@ -176,6 +176,17 @@ def _fetch_ticker_data_impl(ticker: str) -> dict:
         if not info.get("regularMarketPrice"):
             info["regularMarketPrice"] = price
 
+        # Normalize dividendYield to decimal (0–1 range).
+        # yfinance occasionally returns it as percentage (e.g. 2.5 instead of 0.025).
+        dy = info.get("dividendYield")
+        if dy is not None:
+            try:
+                dy_f = float(dy)
+                if dy_f > 1.0:          # clearly a percentage, not decimal
+                    info["dividendYield"] = dy_f / 100
+            except Exception:
+                pass
+
         # Stagger requests to avoid hammering Yahoo Finance
         hist_2y = _retry(lambda: stock.history(period="2y"), label=f"{ticker}/hist_2y")
         hist_5y = _retry(lambda: stock.history(period="5y"), label=f"{ticker}/hist_5y")
