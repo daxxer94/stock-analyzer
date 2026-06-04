@@ -2085,57 +2085,77 @@ Each model answers a **different question**:
             if fig_earn.data:
                 st.plotly_chart(fig_earn, use_container_width=True)
 
-            # ── Recent analyst rating changes with dates ───────────────────
+            # ── Recent analyst rating changes ─────────────────────────────
             recs_df = data.get("recommendations")
             if recs_df is not None and isinstance(recs_df, pd.DataFrame) and not recs_df.empty:
                 st.markdown(section_header("Recent Analyst Rating Changes"), unsafe_allow_html=True)
-
-                # GradeDate is the index; Firm, ToGrade, FromGrade, Action are columns
                 try:
                     recs_show = recs_df.reset_index()
-                    # yfinance stores epochGradeDate as Unix seconds → use unit='s'
-                    date_col = "GradeDate" if "GradeDate" in recs_show.columns else recs_show.columns[0]
-                    recs_show = recs_show.rename(columns={
-                        date_col:    "Date",
-                        "Firm":      "Analyst Firm",
-                        "ToGrade":   "Rating",
-                        "FromGrade": "Previous",
-                        "Action":    "Action",
-                    })
-                    if "Date" in recs_show.columns:
-                        raw_dates = recs_show["Date"]
-                        # If numeric (epoch seconds), convert with unit='s'
-                        if pd.api.types.is_numeric_dtype(raw_dates):
-                            recs_show["Date"] = pd.to_datetime(raw_dates, unit="s", errors="coerce")
-                        else:
-                            recs_show["Date"] = pd.to_datetime(raw_dates, errors="coerce")
+
+                    # Normalise column names (yfinance 1.4.0 uses these after rename)
+                    col_map = {}
+                    for c in recs_show.columns:
+                        cl = c.lower()
+                        if "grade" in cl and "date" in cl: col_map[c] = "_raw_date"
+                        elif c in ("Firm","firm"):          col_map[c] = "Analyst Firm"
+                        elif c in ("ToGrade","toGrade"):    col_map[c] = "Rating"
+                        elif c in ("FromGrade","fromGrade"):col_map[c] = "Previous"
+                        elif c in ("Action","action"):      col_map[c] = "Action"
+                        elif c == "GradeDate":              col_map[c] = "_raw_date"
+                    recs_show = recs_show.rename(columns=col_map)
+
+                    # Parse dates — try multiple strategies, discard if invalid (epoch 0)
+                    has_valid_dates = False
+                    MIN_VALID = pd.Timestamp("2000-01-01")   # anything before 2000 = bad data
+
+                    if "_raw_date" in recs_show.columns:
+                        raw = recs_show["_raw_date"]
+                        parsed = None
+                        for kwargs in [{"unit": "ms"}, {"unit": "s"}, {}]:
+                            try:
+                                candidate = pd.to_datetime(raw, errors="coerce", **kwargs)
+                                if candidate.notna().any() and candidate.max() > MIN_VALID:
+                                    parsed = candidate
+                                    break
+                            except Exception:
+                                pass
+
+                        if parsed is not None and parsed.max() > MIN_VALID:
+                            recs_show["Date"] = parsed
+                            has_valid_dates = True
+                        recs_show = recs_show.drop(columns=["_raw_date"], errors="ignore")
+
+                    # Filter to last 10, sort newest first
+                    if has_valid_dates:
                         recs_show = recs_show.dropna(subset=["Date"])
+                        recs_show = recs_show[recs_show["Date"] > MIN_VALID]
                         recs_show = recs_show.sort_values("Date", ascending=False).head(10)
-                        # Age indicator BEFORE formatting date as string
                         cutoff_90d = pd.Timestamp.now() - pd.Timedelta(days=90)
-                        recent_ct  = (recs_show["Date"] >= cutoff_90d).sum()
+                        recent_ct  = int((recs_show["Date"] >= cutoff_90d).sum())
                         recs_show["Date"] = recs_show["Date"].dt.strftime("%d %b %Y")
                     else:
+                        # Dates not available — show ratings without date column
                         recent_ct = 0
+                        recs_show = recs_show.head(10)
 
-                    keep_cols = [c for c in ["Date","Analyst Firm","Rating","Previous","Action"] if c in recs_show.columns]
-                    st.dataframe(recs_show[keep_cols], use_container_width=True, hide_index=True)
+                    keep_cols = ([c for c in ["Date","Analyst Firm","Rating","Previous","Action"]
+                                  if c in recs_show.columns])
+                    if keep_cols:
+                        st.dataframe(recs_show[keep_cols], use_container_width=True, hide_index=True)
 
-                    # Freshness indicator
-                    if recent_ct > 0:
-                        st.success(f"✅ {recent_ct} rating change{'s' if recent_ct > 1 else ''} in the last 90 days — targets are recent and relevant.")
+                    # Freshness banner
+                    if not has_valid_dates:
+                        st.caption("ℹ️ Date information not available from Yahoo Finance for this ticker.")
+                    elif recent_ct > 0:
+                        st.success(f"✅ {recent_ct} rating change{'s' if recent_ct>1 else ''} "
+                                   "in the last 90 days — analyst coverage is recent.")
                     else:
-                        total = len(recs_df)
-                        if total > 0:
-                            idx_series = recs_df.index
-                            if pd.api.types.is_numeric_dtype(idx_series):
-                                latest = pd.to_datetime(idx_series, unit="s", errors="coerce").max()
-                            else:
-                                latest = pd.to_datetime(idx_series, errors="coerce").max()
-                            days_ago = (pd.Timestamp.now() - latest).days if not pd.isnull(latest) else 999
-                            st.warning(f"⚠️ No analyst changes in the last 90 days. Most recent: {days_ago} days ago — price targets may be stale.")
+                        latest = recs_show["Date"].iloc[0] if has_valid_dates and len(recs_show) > 0 else None
+                        if latest:
+                            st.warning(f"⚠️ Most recent analyst change: {latest} — "
+                                       "price targets may be stale.")
                         else:
-                            st.info("No recent analyst rating data available.")
+                            st.info("No recent analyst rating changes available.")
                 except Exception:
                     pass
 
