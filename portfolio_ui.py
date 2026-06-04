@@ -449,18 +449,7 @@ def render_portfolio_page():
                    "Check that Symbol, Quantity and Purchase Price columns are present.")
         return
 
-    # Preview before analysis
-    if not st.session_state.get("portfolio_analyzed"):
-        st.markdown(f"**{len(positions_df)} positions found:** "
-                    f"{', '.join(positions_df['symbol'].tolist())}")
-        if st.button("🔍 Run Portfolio Analysis", type="primary",
-                     use_container_width=True, key="run_portfolio"):
-            st.session_state["portfolio_running"]  = True
-            st.session_state["portfolio_analyzed"] = False
-            st.rerun()
-        return
-
-    # ── Run enrichment ────────────────────────────────────────────────────────
+    # ── Run enrichment (check BEFORE the preview block so the return doesn't block it)
     if st.session_state.get("portfolio_running"):
         progress = st.progress(0, "Fetching live data…")
         status   = st.empty()
@@ -481,6 +470,25 @@ def render_portfolio_page():
         except Exception as e:
             st.error(f"Analysis failed: {e}")
             st.session_state["portfolio_running"] = False
+        return
+
+    # Preview before first analysis
+    if not st.session_state.get("portfolio_analyzed"):
+        st.markdown(
+            f"<div style='background:#1a1d2e;border:1px solid #3a3f5c;border-radius:10px;"
+            f"padding:14px 18px;margin-bottom:12px'>"
+            f"<div style='font-size:14px;font-weight:700;color:#e2e8f0'>"
+            f"✅ {len(positions_df)} positions loaded</div>"
+            f"<div style='font-size:12px;color:#94a3b8;margin-top:4px'>"
+            f"{', '.join(positions_df['symbol'].tolist())}"
+            f"</div></div>",
+            unsafe_allow_html=True
+        )
+        if st.button("🔍 Run Portfolio Analysis", type="primary",
+                     use_container_width=True, key="run_portfolio"):
+            st.session_state["portfolio_running"]  = True
+            st.session_state["portfolio_analyzed"] = False
+            st.rerun()
         return
 
     # ── Display results ───────────────────────────────────────────────────────
