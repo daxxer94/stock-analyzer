@@ -200,7 +200,7 @@ def render_positions_table(enriched: pd.DataFrame):
 
     # Sort controls
     sort_col = st.selectbox("Sort by", ["Market Value","P&L %","P&L €","Weight"],
-                            horizontal=True, label_visibility="collapsed", key="pos_sort")
+                            label_visibility="collapsed", key="pos_sort")
     sort_map = {"Market Value":"market_value","P&L %":"pnl_pct",
                 "P&L €":"unrealized_pnl","Weight":"weight_pct"}
     df = enriched.sort_values(sort_map[sort_col], ascending=False)
