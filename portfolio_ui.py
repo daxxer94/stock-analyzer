@@ -430,8 +430,15 @@ def render_portfolio_page():
 
     if uploaded is not None:
         text = uploaded.read().decode("utf-8")
-        st.session_state["portfolio_csv_text"] = text
-        st.session_state["portfolio_analyzed"]  = False
+        # Only reset analysis if the file content actually changed
+        import hashlib
+        new_hash = hashlib.md5(text.encode()).hexdigest()
+        if new_hash != st.session_state.get("portfolio_csv_hash"):
+            st.session_state["portfolio_csv_text"] = text
+            st.session_state["portfolio_csv_hash"] = new_hash
+            st.session_state["portfolio_analyzed"]  = False
+            st.session_state.pop("portfolio_enriched", None)
+            st.session_state.pop("portfolio_metrics",  None)
 
     csv_text = st.session_state.get("portfolio_csv_text")
     if not csv_text:
