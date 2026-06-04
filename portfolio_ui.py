@@ -455,21 +455,27 @@ def render_portfolio_page():
         status   = st.empty()
 
         def _prog(i, total, sym):
-            pct = int((i / max(total,1)) * 100)
+            pct = int((i / max(total, 1)) * 100)
             progress.progress(pct / 100, f"Fetching {sym} ({i+1}/{total})…")
             status.caption(f"Fetching {sym}…")
 
+        _analysis_error = None
         try:
             enriched = enrich_portfolio(positions_df, progress_cb=_prog)
             metrics  = calc_portfolio_metrics(enriched)
-            st.session_state["portfolio_enriched"]  = enriched
-            st.session_state["portfolio_metrics"]   = metrics
-            st.session_state["portfolio_running"]   = False
-            st.session_state["portfolio_analyzed"]  = True
-            st.rerun()
+            st.session_state["portfolio_enriched"] = enriched
+            st.session_state["portfolio_metrics"]  = metrics
+            st.session_state["portfolio_analyzed"] = True
         except Exception as e:
-            st.error(f"Analysis failed: {e}")
+            _analysis_error = e
+        finally:
             st.session_state["portfolio_running"] = False
+
+        # st.rerun() raises RerunException — must be OUTSIDE try/except
+        if _analysis_error:
+            st.error(f"Analysis error: {_analysis_error}")
+        else:
+            st.rerun()
         return
 
     # Preview before first analysis
