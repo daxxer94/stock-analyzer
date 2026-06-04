@@ -32,7 +32,7 @@ from sec_data            import (fetch_news, build_news_search_links, fetch_sec_
                                   generate_swot, get_regulatory_info)
 from screener_ui         import render_screener_page
 from cca                 import run_cca, format_cca_peer_table
-from financial_analysis  import run_deep_analysis, DRIVER_COLORS, SENSITIVITY_COLORS
+from financial_analysis  import run_deep_analysis, DRIVER_COLORS, SENSITIVITY_COLORS, SECTOR_MACRO_SENSITIVITY
 
 # ─── Page config ─────────────────────────────────────────────────────────────
 try:
@@ -1986,7 +1986,14 @@ Each model answers a **different question**:
                     t_str = _pct_str(t) if is_pct else (fmt(t, dec=2) if t else "—")
                     m_str = _pct_str(m) if is_pct else (fmt(m, dec=2) if m else "—")
                     sig = r.get("signal","")
-                    fs  = "beat" if "Above" in sig else ("miss" if "Below" in sig else "inline") if "In line" in sig else ""
+                    hb  = r.get("higher_better", True)
+                    # "Above avg" is a beat only if higher is better (margins, ROE, growth).
+                    # For valuation multiples (P/E, PEG, EV/EBITDA) LOWER is better,
+                    # so "Below avg" = beat and "Above avg" = miss.
+                    if "In line" in sig:   fs = "inline"
+                    elif "Above" in sig:   fs = "beat" if hb else "miss"
+                    elif "Below" in sig:   fs = "miss" if hb else "beat"
+                    else:                  fs = ""
                     st.markdown(tooltip_html(r["key"], r["metric"], f"{t_str}  (peers: {m_str})", fs),
                                 unsafe_allow_html=True)
             with c2:
@@ -2086,7 +2093,7 @@ Each model answers a **different question**:
                 # GradeDate is the index; Firm, ToGrade, FromGrade, Action are columns
                 try:
                     recs_show = recs_df.reset_index()
-                    # Rename index column if needed
+                    # yfinance stores epochGradeDate as Unix seconds → use unit='s'
                     date_col = "GradeDate" if "GradeDate" in recs_show.columns else recs_show.columns[0]
                     recs_show = recs_show.rename(columns={
                         date_col:    "Date",
@@ -2095,15 +2102,19 @@ Each model answers a **different question**:
                         "FromGrade": "Previous",
                         "Action":    "Action",
                     })
-                    # Format date column
                     if "Date" in recs_show.columns:
-                        recs_show["Date"] = pd.to_datetime(recs_show["Date"], errors="coerce")
+                        raw_dates = recs_show["Date"]
+                        # If numeric (epoch seconds), convert with unit='s'
+                        if pd.api.types.is_numeric_dtype(raw_dates):
+                            recs_show["Date"] = pd.to_datetime(raw_dates, unit="s", errors="coerce")
+                        else:
+                            recs_show["Date"] = pd.to_datetime(raw_dates, errors="coerce")
                         recs_show = recs_show.dropna(subset=["Date"])
                         recs_show = recs_show.sort_values("Date", ascending=False).head(10)
-                        recs_show["Date"] = recs_show["Date"].dt.strftime("%d %b %Y")
-                        # Age indicator
+                        # Age indicator BEFORE formatting date as string
                         cutoff_90d = pd.Timestamp.now() - pd.Timedelta(days=90)
-                        recent_ct  = (pd.to_datetime(recs_df.index, errors="coerce") >= cutoff_90d).sum()
+                        recent_ct  = (recs_show["Date"] >= cutoff_90d).sum()
+                        recs_show["Date"] = recs_show["Date"].dt.strftime("%d %b %Y")
                     else:
                         recent_ct = 0
 
@@ -2116,7 +2127,11 @@ Each model answers a **different question**:
                     else:
                         total = len(recs_df)
                         if total > 0:
-                            latest = pd.to_datetime(recs_df.index, errors="coerce").max()
+                            idx_series = recs_df.index
+                            if pd.api.types.is_numeric_dtype(idx_series):
+                                latest = pd.to_datetime(idx_series, unit="s", errors="coerce").max()
+                            else:
+                                latest = pd.to_datetime(idx_series, errors="coerce").max()
                             days_ago = (pd.Timestamp.now() - latest).days if not pd.isnull(latest) else 999
                             st.warning(f"⚠️ No analyst changes in the last 90 days. Most recent: {days_ago} days ago — price targets may be stale.")
                         else:

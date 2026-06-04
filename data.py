@@ -176,16 +176,27 @@ def _fetch_ticker_data_impl(ticker: str) -> dict:
         if not info.get("regularMarketPrice"):
             info["regularMarketPrice"] = price
 
-        # Normalize dividendYield to decimal (0–1 range).
-        # yfinance occasionally returns it as percentage (e.g. 2.5 instead of 0.025).
-        dy = info.get("dividendYield")
-        if dy is not None:
-            try:
-                dy_f = float(dy)
-                if dy_f > 1.0:          # clearly a percentage, not decimal
-                    info["dividendYield"] = dy_f / 100
-            except Exception:
-                pass
+        # ── Normalize dividendYield to true decimal (e.g. 0.0058 = 0.58%) ─────
+        # yfinance is inconsistent: sometimes 0.0058, sometimes 0.58, sometimes 5.8.
+        # Most reliable: recompute from dividendRate / currentPrice if available.
+        try:
+            div_rate = float(info.get("dividendRate") or
+                             info.get("trailingAnnualDividendRate") or 0)
+            cp_for_dy = float(price or 1)
+            if div_rate > 0 and cp_for_dy > 0:
+                # Recompute directly — bypasses ambiguous dividendYield field entirely
+                info["dividendYield"] = div_rate / cp_for_dy
+            else:
+                # Fall back to normalising whatever yfinance returned
+                dy = info.get("dividendYield")
+                if dy is not None:
+                    dy_f = float(dy)
+                    # Any yield > 0.25 (25%) is almost certainly already in % form
+                    # (e.g. 0.58 means 0.58%, not 58%)
+                    if dy_f > 0.25:
+                        info["dividendYield"] = dy_f / 100
+        except Exception:
+            pass
 
         # Stagger requests to avoid hammering Yahoo Finance
         hist_2y = _retry(lambda: stock.history(period="2y"), label=f"{ticker}/hist_2y")
