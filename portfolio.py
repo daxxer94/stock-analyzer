@@ -25,13 +25,41 @@ import random
 
 def parse_yahoo_csv(file_content: str) -> pd.DataFrame:
     """
-    Parse Yahoo Finance portfolio CSV.
-    Returns a clean DataFrame with one row per symbol (net position).
-    Handles multiple buy/sell transactions per symbol.
+    Parse Yahoo Finance portfolio CSV — handles duplicate column names.
+    Yahoo Finance CSVs often have two columns both named 'Date'.
+    We deduplicate headers before handing to pandas.
     """
     from io import StringIO
+    import csv as _csv
+
+    lines = [l for l in file_content.splitlines() if l.strip()]
+    if not lines:
+        raise ValueError("CSV file is empty")
+
+    # Parse the header row and deduplicate
     try:
-        df = pd.read_csv(StringIO(file_content))
+        raw_headers = list(next(_csv.reader([lines[0]])))
+    except Exception:
+        raw_headers = lines[0].split(",")
+    raw_headers = [h.strip() for h in raw_headers]
+
+    seen = {}
+    clean_headers = []
+    for h in raw_headers:
+        if h not in seen:
+            seen[h] = 1
+            clean_headers.append(h)
+        else:
+            seen[h] += 1
+            clean_headers.append(h + "_" + str(seen[h]))
+
+    newline = chr(10)
+    clean_csv = ",".join(clean_headers) + newline + newline.join(lines[1:])
+
+    try:
+        df = pd.read_csv(StringIO(clean_csv), on_bad_lines="skip")
+    except TypeError:
+        df = pd.read_csv(StringIO(clean_csv))
     except Exception as e:
         raise ValueError(f"Could not parse CSV: {e}")
 
@@ -45,7 +73,8 @@ def parse_yahoo_csv(file_content: str) -> pd.DataFrame:
         if cl == "symbol":                           col_map[c] = "Symbol"
         elif cl in ("purchaseprice","buyprice"):     col_map[c] = "Purchase Price"
         elif cl == "quantity":                       col_map[c] = "Quantity"
-        elif cl in ("tradedate","date"):             col_map[c] = "Trade Date"
+        elif cl == "tradedate":                      col_map[c] = "Trade Date"
+        elif cl == "date" and "Trade Date" not in col_map.values(): col_map[c] = "Trade Date"
         elif cl == "commission":                     col_map[c] = "Commission"
         elif cl in ("transactiontype","type","txntype"): col_map[c] = "Transaction Type"
         elif cl == "currentprice":                   col_map[c] = "Current Price"
@@ -63,7 +92,11 @@ def parse_yahoo_csv(file_content: str) -> pd.DataFrame:
 
     # Parse Trade Date
     if "Trade Date" in df.columns:
-        df["Trade Date"] = pd.to_datetime(df["Trade Date"], errors="coerce")
+        col = df["Trade Date"]
+        # If rename created a DataFrame (2 cols), take the first one
+        if isinstance(col, pd.DataFrame):
+            col = col.iloc[:, 0]
+        df["Trade Date"] = pd.to_datetime(col, errors="coerce")
 
     # Transaction Type default = Buy
     if "Transaction Type" not in df.columns:
