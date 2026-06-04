@@ -32,6 +32,7 @@ from sec_data            import (fetch_news, build_news_search_links, fetch_sec_
                                   generate_swot, get_regulatory_info)
 from screener_ui         import render_screener_page
 from cca                 import run_cca, format_cca_peer_table
+from financial_analysis  import run_deep_analysis, DRIVER_COLORS, SENSITIVITY_COLORS
 
 # ─── Page config ─────────────────────────────────────────────────────────────
 try:
@@ -1272,10 +1273,294 @@ Implied Share Price = Peer Multiple × Target's EPS (or Book Value per Share)
                         unsafe_allow_html=True)
 
 
+
+def render_deep_analysis_tab(ticker, info, deep, fund, data):
+    """Deep Financial Analysis tab — statements, scores, macro."""
+    if not deep:
+        st.info("Run analysis to see deep financial metrics.")
+        return
+
+    native_ccy = info.get("currency","USD")
+    disp_ccy   = st.session_state.get("display_ccy_code", native_ccy)
+    rates      = st.session_state.get("fx_rates", {})
+    sector     = info.get("sector","")
+
+    # ── Summary scorecard row ────────────────────────────────────────────────
+    piot  = deep.get("piotroski", {})
+    alt   = deep.get("altman", {})
+    dup   = deep.get("dupont", {})
+    cap   = deep.get("cap_eff", {})
+    macro = deep.get("macro", {})
+    fwd   = deep.get("fwd_growth", {})
+    opl   = deep.get("op_leverage", {})
+
+    # Quick 4-metric scorecard
+    st.markdown("### Financial Health Scores")
+    sc1, sc2, sc3, sc4 = st.columns(4)
+    if piot.get("total") is not None:
+        sc1.metric("Piotroski F-Score",
+                   f"{piot['total']}/9 — {piot['signal'].split()[0]}",
+                   help="0-9 score: ≥7 strong, 4-6 neutral, <4 weak")
+    if alt.get("z_score"):
+        sc2.metric("Altman Z-Score",
+                   f"{alt['z_score']} — {alt['zone'].split()[0]}",
+                   help="Z>2.99 safe, 1.81-2.99 grey, <1.81 distress")
+    if dup.get("roe_direct"):
+        sc3.metric("ROE (DuPont)",
+                   f"{dup['roe_direct']:.1%}",
+                   f"Driven by {dup.get('primary_driver','?')}")
+    if cap.get("roic"):
+        sc4.metric("ROIC",
+                   f"{cap['roic']['value']:.1%}",
+                   cap["roic"]["note"][:30])
+
+    st.divider()
+
+    col_left, col_right = st.columns([1, 1], gap="large")
+
+    with col_left:
+        # ── Piotroski F-Score breakdown ───────────────────────────────────
+        if piot.get("scores"):
+            st.markdown(section_header(f"📊 Piotroski F-Score: {piot['total']}/9"), unsafe_allow_html=True)
+            st.caption("Financial health checklist developed by Stanford professor Joseph Piotroski (2000)")
+            groups = [
+                ("Profitability", ["F1_roa_positive","F2_ocf_positive","F3_roa_improving","F4_accruals"]),
+                ("Leverage & Liquidity", ["F5_leverage_improving","F6_liquidity","F7_no_dilution"]),
+                ("Operating Efficiency", ["F8_gross_margin","F9_asset_turnover"]),
+            ]
+            for grp_name, keys in groups:
+                st.markdown(f"**{grp_name}**")
+                for k in keys:
+                    s = piot["scores"].get(k, {})
+                    icon  = "✅" if s.get("pass") else "❌"
+                    color = "#68d391" if s.get("pass") else "#fc8181"
+                    st.markdown(
+                        f"<div style='display:flex;justify-content:space-between;"
+                        f"padding:3px 0;font-size:12px;border-bottom:1px solid #1e2130'>"
+                        f"<span style='color:#a0aec0'>{icon} {s.get('label','')}</span>"
+                        f"<span style='color:{color};font-weight:600'>{s.get('value','')}</span>"
+                        f"</div>",
+                        unsafe_allow_html=True
+                    )
+
+        # ── DuPont Decomposition ──────────────────────────────────────────
+        if dup and not dup.get("error"):
+            st.markdown(section_header("⚗️ DuPont ROE Decomposition"), unsafe_allow_html=True)
+            st.caption("ROE = Net Margin × Asset Turnover × Equity Multiplier")
+            components = [
+                ("Net Margin",       dup.get("net_margin"),        "Profitability — how much of each revenue dollar becomes profit"),
+                ("Asset Turnover",   dup.get("asset_turnover"),    "Efficiency — revenue generated per dollar of assets"),
+                ("Equity Multiplier",dup.get("equity_multiplier"), "Leverage — ratio of assets to equity (higher = more debt)"),
+            ]
+            for lbl, val, desc in components:
+                is_primary = lbl == dup.get("primary_driver")
+                fmt_val = f"{val:.2%}" if lbl == "Net Margin" else f"{val:.2f}×"
+                bg = "#1a2a1a" if is_primary else "transparent"
+                st.markdown(
+                    f"<div style='background:{bg};padding:6px 10px;border-radius:6px;margin:3px 0'>"
+                    f"<div style='display:flex;justify-content:space-between'>"
+                    f"<span style='font-size:13px;color:#e2e8f0;font-weight:{"700" if is_primary else "400"}'>"
+                    f"{'★ ' if is_primary else ''}{lbl}</span>"
+                    f"<span style='font-size:14px;font-weight:700;color:#68d391'>{fmt_val}</span>"
+                    f"</div>"
+                    f"<div style='font-size:11px;color:#718096;margin-top:2px'>{desc}</div>"
+                    f"</div>",
+                    unsafe_allow_html=True
+                )
+            st.markdown(
+                f"<div style='background:#1a1d2e;border:1px solid #3a3f5c;border-radius:8px;"
+                f"padding:8px 12px;margin-top:8px;font-size:12px;color:#a0aec0'>"
+                f"💡 <b style='color:#e2e8f0'>Primary driver:</b> {dup.get('driver_note','')}"
+                f"</div>",
+                unsafe_allow_html=True
+            )
+
+    with col_right:
+        # ── Altman Z-Score ────────────────────────────────────────────────
+        if alt and not alt.get("error"):
+            st.markdown(section_header("⚡ Altman Z-Score"), unsafe_allow_html=True)
+            st.caption("Bankruptcy risk model — developed by Edward Altman (1968)")
+            zc = alt["color"]
+            st.markdown(
+                f"<div style='background:#1a1d2e;border:2px solid {zc};border-radius:10px;"
+                f"padding:16px;text-align:center;margin-bottom:12px'>"
+                f"<div style='font-size:32px;font-weight:900;color:{zc}'>{alt['z_score']}</div>"
+                f"<div style='font-size:13px;color:{zc};font-weight:700'>{alt['zone']}</div>"
+                f"<div style='font-size:11px;color:#718096;margin-top:4px'>{alt['interpretation'][:120]}</div>"
+                f"</div>",
+                unsafe_allow_html=True
+            )
+            thresholds = [
+                ("> 2.99", "Safe Zone",     "#00C853"),
+                ("1.81–2.99", "Grey Zone",  "#FFC107"),
+                ("< 1.81", "Distress Zone", "#EF5350"),
+            ]
+            for thr, lbl, tc in thresholds:
+                st.markdown(
+                    f"<div style='font-size:11px;color:{tc};padding:2px 0'>"
+                    f"Z {thr} → {lbl}</div>",
+                    unsafe_allow_html=True
+                )
+
+        # ── Capital Efficiency ────────────────────────────────────────────
+        if cap:
+            st.markdown(section_header("💎 Capital Efficiency"), unsafe_allow_html=True)
+            for key, metric in cap.items():
+                if not isinstance(metric, dict) or "value" not in metric:
+                    continue
+                v   = metric["value"]
+                lbl = metric["label"]
+                note= metric["note"]
+                is_pct = v < 2 and v != 0
+                disp = f"{v:.1%}" if is_pct else f"{v:.2f}×"
+                st.markdown(
+                    f"<div style='padding:6px 0;border-bottom:1px solid #1e2130'>"
+                    f"<div style='display:flex;justify-content:space-between'>"
+                    f"<span style='font-size:12px;color:#a0aec0'>{lbl}</span>"
+                    f"<span style='font-size:13px;font-weight:700;color:#e2e8f0'>{disp}</span>"
+                    f"</div>"
+                    f"<div style='font-size:11px;color:#718096'>{note}</div>"
+                    f"</div>",
+                    unsafe_allow_html=True
+                )
+
+        # ── Operating Leverage ────────────────────────────────────────────
+        if opl and not opl.get("error") and opl.get("dol") is not None:
+            st.markdown(section_header("⚙️ Operating Leverage"), unsafe_allow_html=True)
+            dol = opl["dol"]
+            dol_c = "#EF5350" if dol > 3 else ("#FFC107" if dol > 1.5 else "#68d391")
+            st.markdown(
+                f"<div style='display:flex;align-items:center;gap:12px;padding:8px 0'>"
+                f"<div style='font-size:28px;font-weight:800;color:{dol_c}'>{dol:.2f}×</div>"
+                f"<div style='font-size:12px;color:#a0aec0'>Degree of Operating Leverage (DOL)</div>"
+                f"</div>"
+                f"<div style='font-size:12px;color:#718096;padding:4px 0'>{opl['note']}</div>",
+                unsafe_allow_html=True
+            )
+
+    st.divider()
+
+    # ── Forward Growth Analysis ───────────────────────────────────────────────
+    st.markdown("### 📈 Forward Growth & Analyst Estimates")
+    if fwd:
+        fg1, fg2, fg3 = st.columns(3)
+        if fwd.get("rev_growth"):
+            fg1.metric("Revenue Growth (TTM)", f"{fwd['rev_growth']:.1%}")
+        if fwd.get("eps_growth"):
+            fg2.metric("EPS Growth (TTM)", f"{fwd['eps_growth']:.1%}")
+        if fwd.get("fwd_pe"):
+            fg3.metric("Forward P/E", f"{fwd['fwd_pe']:.1f}×")
+
+        # Estimate revision trend
+        rev_4w = fwd.get("estimate_revision_4w")
+        rev_3m = fwd.get("estimate_revision_3m")
+        if rev_4w is not None or rev_3m is not None:
+            st.markdown(section_header("📐 EPS Estimate Revisions"), unsafe_allow_html=True)
+            rc1, rc2 = st.columns(2)
+            if rev_4w is not None:
+                c4 = "#68d391" if rev_4w > 0 else "#fc8181"
+                rc1.markdown(f"<div style='font-size:12px;color:#a0aec0'>4-week revision</div>"
+                            f"<div style='font-size:20px;font-weight:700;color:{c4}'>"
+                            f"{'▲' if rev_4w>0 else '▼'} {abs(rev_4w):.1%}</div>",
+                            unsafe_allow_html=True)
+            if rev_3m is not None:
+                c3 = "#68d391" if rev_3m > 0 else "#fc8181"
+                rc2.markdown(f"<div style='font-size:12px;color:#a0aec0'>3-month revision</div>"
+                            f"<div style='font-size:20px;font-weight:700;color:{c3}'>"
+                            f"{'▲' if rev_3m>0 else '▼'} {abs(rev_3m):.1%}</div>",
+                            unsafe_allow_html=True)
+            st.caption("Positive revisions = analysts raising EPS estimates (bullish signal). "
+                       "Negative = estimates being cut (bearish signal).")
+
+    st.divider()
+
+    # ── Macro & Industry Sensitivity ──────────────────────────────────────────
+    st.markdown("### 🌍 Market, Industry & Macro Factors")
+    macro_profile = SECTOR_MACRO_SENSITIVITY.get(sector, {})
+
+    if macro_profile:
+        # Sensitivity ratings row
+        st.markdown(f"**{sector} sector** — key macro sensitivities:")
+        sens_cols = st.columns(4)
+        for col, (lbl, key) in zip(sens_cols, [
+            ("Recession", "recession_sensitivity"),
+            ("Interest Rates", "rate_sensitivity"),
+            ("FX / USD", "fx_sensitivity"),
+            ("Cyclicality", "cyclicality"),
+        ]):
+            val = macro_profile.get(key, "unknown")
+            c   = SENSITIVITY_COLORS.get(val, "#718096")
+            col.markdown(
+                f"<div style='background:{c}22;border:1px solid {c}44;border-radius:8px;"
+                f"padding:8px;text-align:center'>"
+                f"<div style='font-size:10px;color:#718096'>{lbl}</div>"
+                f"<div style='font-size:13px;font-weight:700;color:{c}'>{val.title()}</div>"
+                f"</div>",
+                unsafe_allow_html=True
+            )
+
+        # Market sensitivity (beta)
+        beta = macro.get("beta", 1.0)
+        bc   = "#EF5350" if beta > 1.5 else ("#FFC107" if beta > 1.0 else "#68d391")
+        st.markdown(
+            f"<div style='margin:12px 0 8px;padding:10px 14px;background:#1a1d2e;"
+            f"border:1px solid #3a3f5c;border-radius:8px'>"
+            f"<div style='font-size:12px;color:#718096'>Market Sensitivity (β = {beta:.2f})</div>"
+            f"<div style='font-size:13px;color:{bc};font-weight:600;margin-top:3px'>"
+            f"{macro.get('market_sensitivity','')}</div>"
+            f"</div>",
+            unsafe_allow_html=True
+        )
+
+        # Interest rate sensitivity from balance sheet
+        nde = macro.get("net_debt_ebitda")
+        ic  = macro.get("interest_coverage")
+        if nde is not None:
+            nde_c = "#EF5350" if nde > 3 else ("#FFC107" if nde > 1.5 else "#68d391")
+            ic_str = f"  ·  Interest coverage: {ic:.1f}×" if ic else ""
+            st.markdown(
+                f"<div style='font-size:12px;color:#a0aec0;padding:4px 0'>"
+                f"Net Debt/EBITDA: <span style='color:{nde_c};font-weight:700'>{nde:.1f}×</span>{ic_str}"
+                f" — {'High leverage = significant rate risk' if nde > 3 else 'Moderate leverage' if nde > 1.5 else 'Low leverage = minimal rate risk'}"
+                f"</div>",
+                unsafe_allow_html=True
+            )
+
+        # Key macro drivers table
+        st.markdown(f"**Key macro drivers for {sector}:**")
+        drivers = macro_profile.get("drivers", [])
+        for driver, direction, description in drivers:
+            dc = DRIVER_COLORS.get(direction, "#718096")
+            dir_lbl = {"positive":"▲ Positive","negative":"▼ Negative",
+                       "cyclical":"↕ Cyclical","mixed":"↔ Mixed",
+                       "moderate":"→ Moderate","low":"→ Low"}.get(direction, direction)
+            st.markdown(
+                f"<div style='padding:8px 12px;border-left:3px solid {dc};"
+                f"margin:4px 0;background:#0e1117;border-radius:0 6px 6px 0'>"
+                f"<div style='display:flex;justify-content:space-between;align-items:center'>"
+                f"<span style='font-size:13px;font-weight:600;color:#e2e8f0'>{driver}</span>"
+                f"<span style='font-size:11px;color:{dc};font-weight:700'>{dir_lbl}</span>"
+                f"</div>"
+                f"<div style='font-size:12px;color:#718096;margin-top:3px'>{description}</div>"
+                f"</div>",
+                unsafe_allow_html=True
+            )
+    else:
+        st.info(f"No sector macro profile available for '{sector}'. "
+                "The deep analysis above (Piotroski, Altman, DuPont) is still valid.")
+
+    st.markdown("""
+> **Data sources:** Financial ratios from yfinance (Yahoo Finance).
+> Macro sensitivity profiles compiled from Bloomberg sector factor research,
+> Damodaran industry analysis, and Fed/OECD sector studies.
+> Piotroski F-Score: Piotroski (2000) — *Journal of Accounting Research*.
+> Altman Z-Score: Altman (1968, 1983) — *Journal of Finance*.
+    """)
+
 # ─── Per-stock Deep Dive ──────────────────────────────────────────────────────
 
 def render_stock_tab(ticker, data, dcf, fund, indicators, signals,
-                     valuation, comparison, sentiment, scoring, peer_data):
+                     valuation, comparison, sentiment, scoring, peer_data, deep=None):
     info = data["info"]
     cp   = get_current_price(info)
 
@@ -1294,7 +1579,8 @@ def render_stock_tab(ticker, data, dcf, fund, indicators, signals,
 
     tabs = st.tabs(["📋 Overview", "💰 Financials & DCF", "📊 Comparable Analysis",
                      "📊 Valuation & Peers", "📈 Technical Analysis", "🎯 Sentiment",
-                     "📅 Earnings & Forecasts", "🏢 Intelligence", "📰 News", "🔮 Prediction"])
+                     "📅 Earnings & Forecasts", "🏢 Intelligence", "📰 News",
+                     "🔮 Prediction", "🧠 Deep Analysis"])
 
     # ── Overview ──────────────────────────────────────────────────────────────
     with tabs[0]:
@@ -1866,6 +2152,10 @@ Each model answers a **different question**:
     # ── Prediction ────────────────────────────────────────────────────────────
     with tabs[9]:
         render_prediction_tab(ticker, info, dcf, sentiment, scoring, signals, fund)
+
+    # ── Deep Financial Analysis ───────────────────────────────────────────────
+    with tabs[10]:
+        render_deep_analysis_tab(ticker, info, deep or {}, fund, data)
 
 
 
@@ -2576,11 +2866,13 @@ def main():
                     scoring["val_msgs"]  = vmsgs
                     scoring["sent_msgs"] = smsgs
 
+                    deep = run_deep_analysis(data, info)
                     results[ticker] = {
                         "data": data, "peers": peers_list, "peer_data": peer_data,
                         "fund": fund, "dcf": dcf, "indicators": ind, "signals": sigs,
                         "valuation": valuation, "comparison": comparison,
                         "sentiment": sentiment, "scoring": scoring,
+                        "deep": deep,
                     }
                 except Exception as _err:
                     results[ticker] = {"error": f"{ticker}: {_err}"}
@@ -2627,6 +2919,7 @@ def main():
                 indicators=r["indicators"], signals=r["signals"], valuation=r["valuation"],
                 comparison=r["comparison"], sentiment=r["sentiment"],
                 scoring=r["scoring"], peer_data=r["peer_data"],
+                deep=r.get("deep", {}),
             )
 
 
