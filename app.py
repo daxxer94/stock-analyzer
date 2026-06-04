@@ -31,6 +31,7 @@ from sec_data            import (fetch_news, build_news_search_links, fetch_sec_
                                   fetch_sec_filings, extract_customers_suppliers,
                                   generate_swot, get_regulatory_info)
 from screener_ui         import render_screener_page
+from portfolio_ui        import render_portfolio_page
 from cca                 import run_cca, format_cca_peer_table
 from financial_analysis  import run_deep_analysis, DRIVER_COLORS, SENSITIVITY_COLORS, SECTOR_MACRO_SENSITIVITY
 
@@ -2683,16 +2684,18 @@ def main():
             st.session_state["nav_page"] = forced
 
         nav_page = st.session_state.get("nav_page", "analyzer")
-        nav_sel  = st.radio(
+        _idx_map  = {"analyzer": 0, "screener": 1, "portfolio": 2}
+        nav_sel   = st.radio(
             "Navigation",
-            options=["📈 Analyzer", "🔍 Screener"],
-            index=0 if nav_page == "analyzer" else 1,
+            options=["📈 Analyzer", "🔍 Screener", "💼 Portfolio"],
+            index=_idx_map.get(nav_page, 0),
             horizontal=True,
             key="nav_radio",
             label_visibility="collapsed",
         )
-        # Only update nav_page from radio if no force was applied this cycle
-        new_nav_from_radio = "screener" if "Screener" in nav_sel else "analyzer"
+        new_nav_from_radio = ("screener" if "Screener" in nav_sel
+                              else "portfolio" if "Portfolio" in nav_sel
+                              else "analyzer")
         if new_nav_from_radio != nav_page:
             st.session_state["nav_page"] = new_nav_from_radio
             nav_page = new_nav_from_radio
@@ -2700,8 +2703,11 @@ def main():
         st.markdown("---")
 
         # Only show analyzer controls on analyzer page
-        if st.session_state.get("nav_page", "analyzer") == "screener":
+        _cur = st.session_state.get("nav_page","analyzer")
+        if _cur == "screener":
             st.caption("Use the screener panel on the right to find stocks.")
+        elif _cur == "portfolio":
+            st.caption("Upload your Yahoo Finance portfolio CSV on the right.")
         else:
             st.markdown("**Search & add stocks**")
             st.caption("Type a name (e.g. Apple) or ticker (AAPL, ASML.AS, 7203.T)")
@@ -2826,6 +2832,9 @@ def main():
     # ── Page routing ─────────────────────────────────────────────────────────
     if st.session_state.get("nav_page") == "screener":
         render_screener_page()
+        return
+    if st.session_state.get("nav_page") == "portfolio":
+        render_portfolio_page()
         return
 
     if st.session_state.get("show_deploy"):
