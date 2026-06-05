@@ -411,3 +411,229 @@ def calc_portfolio_metrics(enriched: pd.DataFrame) -> dict:
         "var_95_daily":   var_95_daily,
         "div_income_ann": div_income,
     }
+
+# ─── Benchmark tickers ────────────────────────────────────────────────────────
+
+BENCHMARKS = {
+    "S&P 500":       "^GSPC",
+    "Dow Jones":     "^DJI",
+    "Nasdaq 100":    "^NDX",
+    "FTSE 100":      "^FTSE",
+    "DAX 40":        "^GDAXI",
+    "AEX 25":        "^AEX",
+    "CAC 40":        "^FCHI",
+    "Euro Stoxx 50": "^STOXX50E",
+    "Nikkei 225":    "^N225",
+    "Hang Seng":     "^HSI",
+    "ASX 200":       "^AXJO",
+    "SMI (Swiss)":   "^SSMI",
+    "IBEX 35":       "^IBEX",
+    "Kospi":         "^KS11",
+}
+
+TIMEFRAMES = {
+    "1W":  7,
+    "1M":  30,
+    "3M":  90,
+    "6M":  180,
+    "YTD": None,   # special case
+    "1Y":  365,
+    "2Y":  730,
+    "3Y":  1095,
+}
+
+
+# ─── Historical price fetching ────────────────────────────────────────────────
+
+def fetch_price_history(ticker: str, period: str = "1y") -> pd.Series:
+    """Fetch closing price history for a ticker."""
+    try:
+        hist = _retry(lambda: yf.Ticker(ticker).history(period=period))
+        if hist is not None and not hist.empty:
+            return hist["Close"].dropna()
+    except Exception:
+        pass
+    return pd.Series(dtype=float)
+
+
+def fetch_portfolio_history(enriched: pd.DataFrame,
+                             period: str = "1y") -> pd.Series:
+    """
+    Build portfolio value history from weighted position price histories.
+    Each position contributes: (current_shares × historical_price).
+    Rebased so the earliest available date = sum of cost bases.
+    """
+    if enriched.empty:
+        return pd.Series(dtype=float)
+
+    all_series = {}
+    for _, pos in enriched.iterrows():
+        sym = pos.get("symbol","")
+        qty = pos.get("quantity", 0)
+        if qty <= 0:
+            continue
+        hist = fetch_price_history(sym, period=period)
+        if not hist.empty:
+            all_series[sym] = hist * qty
+        time.sleep(0.2)
+
+    if not all_series:
+        return pd.Series(dtype=float)
+
+    df = pd.DataFrame(all_series)
+    df = df.sort_index().ffill().dropna(how="all")
+    portfolio_series = df.sum(axis=1)
+    return portfolio_series
+
+
+# ─── Advanced portfolio metrics ───────────────────────────────────────────────
+
+def calc_advanced_metrics(enriched: pd.DataFrame, rfr: float = 0.045) -> dict:
+    """
+    Calculate Sharpe Ratio, Alpha, Beta (from returns), Max Drawdown.
+    Uses 1Y of price history for each position + S&P 500 as benchmark.
+    rfr: annual risk-free rate (default 4.5% = current approx US 10Y)
+    """
+    if enriched.empty:
+        return {}
+
+    results = {}
+
+    # ── Portfolio return history ───────────────────────────────────────────
+    port_hist = fetch_portfolio_history(enriched, period="1y")
+    if port_hist.empty or len(port_hist) < 20:
+        return {"error": "Insufficient price history for advanced metrics"}
+
+    port_returns = port_hist.pct_change().dropna()
+
+    # ── Benchmark (S&P 500) returns ────────────────────────────────────────
+    bench_hist = fetch_price_history("^GSPC", period="1y")
+    bench_returns = pd.Series(dtype=float)
+    if not bench_hist.empty:
+        bench_returns = bench_hist.pct_change().dropna()
+        # Align to same dates
+        common = port_returns.index.intersection(bench_returns.index)
+        if len(common) > 20:
+            port_r  = port_returns.loc[common]
+            bench_r = bench_returns.loc[common]
+        else:
+            port_r  = port_returns
+            bench_r = bench_returns
+    else:
+        port_r = port_returns
+
+    n_days = len(port_r)
+
+    # ── Annualised portfolio return ────────────────────────────────────────
+    total_ret   = (port_hist.iloc[-1] / port_hist.iloc[0]) - 1
+    ann_ret     = (1 + total_ret) ** (252 / max(n_days, 1)) - 1
+    daily_vol   = float(port_r.std())
+    ann_vol     = daily_vol * np.sqrt(252)
+
+    # ── Sharpe Ratio ──────────────────────────────────────────────────────
+    daily_rfr  = rfr / 252
+    excess_ret = port_r - daily_rfr
+    sharpe     = float(excess_ret.mean() / daily_vol * np.sqrt(252)) if daily_vol > 0 else None
+
+    # ── Alpha & Beta (vs S&P 500) ─────────────────────────────────────────
+    alpha = beta_calc = None
+    if len(bench_returns) > 20 and len(port_r) > 20:
+        try:
+            cov_matrix  = np.cov(port_r.values, bench_r.values)
+            bench_var   = float(bench_r.var())
+            beta_calc   = float(cov_matrix[0][1] / bench_var) if bench_var > 0 else None
+            bench_ann   = float((1 + bench_r.mean()) ** 252 - 1)
+            if beta_calc is not None:
+                alpha = float(ann_ret - (rfr + beta_calc * (bench_ann - rfr)))
+        except Exception:
+            pass
+
+    # ── Max Drawdown ──────────────────────────────────────────────────────
+    rolling_max = port_hist.cummax()
+    drawdown    = (port_hist - rolling_max) / rolling_max
+    max_dd      = float(drawdown.min())
+    dd_end      = drawdown.idxmin()
+    dd_start    = port_hist[:dd_end].idxmax() if not port_hist[:dd_end].empty else None
+
+    # ── Sortino Ratio (downside only) ─────────────────────────────────────
+    neg_returns    = port_r[port_r < daily_rfr]
+    downside_vol   = float(neg_returns.std() * np.sqrt(252)) if len(neg_returns) > 2 else ann_vol
+    sortino        = float((ann_ret - rfr) / downside_vol) if downside_vol > 0 else None
+
+    # ── Calmar Ratio ──────────────────────────────────────────────────────
+    calmar = float(ann_ret / abs(max_dd)) if max_dd != 0 else None
+
+    results = {
+        "ann_return":      ann_ret,
+        "ann_volatility":  ann_vol,
+        "sharpe":          sharpe,
+        "sortino":         sortino,
+        "alpha":           alpha,
+        "beta_calc":       beta_calc,
+        "max_drawdown":    max_dd,
+        "max_dd_start":    dd_start,
+        "max_dd_end":      dd_end,
+        "calmar":          calmar,
+        "rfr":             rfr,
+        "n_days":          n_days,
+        "port_hist":       port_hist,
+        "port_returns":    port_r,
+    }
+    return results
+
+
+def fetch_benchmark_comparison(enriched: pd.DataFrame,
+                                benchmark_ticker: str,
+                                days: int | None = None) -> dict:
+    """
+    Fetch portfolio and benchmark history for comparison chart.
+    Both series rebased to 100 at the start date.
+    days=None means YTD.
+    """
+    period = "1y"
+    if days and days <= 7:    period = "5d"
+    elif days and days <= 30: period = "1mo"
+    elif days and days <= 90: period = "3mo"
+    elif days and days <= 180:period = "6mo"
+    elif days and days <= 365:period = "1y"
+    elif days and days <= 730:period = "2y"
+    else:                     period = "3y"
+
+    port_hist  = fetch_portfolio_history(enriched, period=period)
+    bench_hist = fetch_price_history(benchmark_ticker, period=period)
+
+    if port_hist.empty:
+        return {"error": "No portfolio history available"}
+
+    # Apply date filter
+    if days is not None:
+        cutoff = pd.Timestamp.now(tz=port_hist.index.tz) - pd.Timedelta(days=days)
+        port_hist  = port_hist[port_hist.index >= cutoff]
+        if not bench_hist.empty:
+            bench_hist = bench_hist[bench_hist.index >= cutoff]
+    else:
+        # YTD
+        ytd_start = pd.Timestamp(pd.Timestamp.now().year, 1, 1)
+        if port_hist.index.tz:
+            ytd_start = ytd_start.tz_localize(port_hist.index.tz)
+        port_hist  = port_hist[port_hist.index >= ytd_start]
+        if not bench_hist.empty:
+            if bench_hist.index.tz:
+                ytd_start2 = ytd_start.tz_localize(bench_hist.index.tz)
+            else:
+                ytd_start2 = ytd_start.tz_localize(None)
+            bench_hist = bench_hist[bench_hist.index >= ytd_start2]
+
+    if port_hist.empty:
+        return {"error": "No data for selected timeframe"}
+
+    # Rebase to 100
+    port_rebased  = port_hist  / port_hist.iloc[0]  * 100
+    bench_rebased = bench_hist / bench_hist.iloc[0] * 100 if not bench_hist.empty else pd.Series()
+
+    return {
+        "portfolio":  port_rebased,
+        "benchmark":  bench_rebased,
+        "port_raw":   port_hist,
+        "bench_raw":  bench_hist,
+    }

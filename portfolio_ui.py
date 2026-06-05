@@ -10,7 +10,9 @@ import plotly.graph_objects as go
 import plotly.express as px
 from plotly.subplots import make_subplots
 
-from portfolio import parse_yahoo_csv, enrich_portfolio, calc_portfolio_metrics
+from portfolio import (parse_yahoo_csv, enrich_portfolio, calc_portfolio_metrics,
+                       calc_advanced_metrics, fetch_benchmark_comparison,
+                       BENCHMARKS, TIMEFRAMES)
 from currency import fmt_currency, CURRENCY_SYMBOLS
 
 
@@ -412,6 +414,233 @@ def render_risk_section(metrics: dict, enriched: pd.DataFrame):
                 f"</div>", unsafe_allow_html=True)
 
 
+
+# ─── Advanced Metrics Section ────────────────────────────────────────────────
+
+def render_advanced_metrics(enriched: pd.DataFrame):
+    """Render Sharpe, Alpha, Beta, Max Drawdown, Sortino, Calmar."""
+    st.markdown("### 📐 Advanced Risk & Performance Metrics")
+
+    with st.spinner("Calculating risk metrics from price history (1Y)…"):
+        adv = calc_advanced_metrics(enriched)
+
+    if not adv or adv.get("error"):
+        st.warning(adv.get("error","Could not calculate advanced metrics — "
+                           "insufficient price history.") if adv else
+                   "Could not calculate advanced metrics.")
+        return
+
+    # ── Metric cards ────────────────────────────────────────────────────────
+    c1,c2,c3,c4 = st.columns(4)
+
+    def _metric_card(col, title, value, fmt, note, color):
+        col.markdown(
+            f"<div style='background:#1a1d2e;border:1px solid #3a3f5c;"
+            f"border-radius:10px;padding:14px;text-align:center'>"
+            f"<div style='font-size:11px;color:#718096;margin-bottom:4px'>{title}</div>"
+            f"<div style='font-size:26px;font-weight:800;color:{color}'>{fmt(value)}</div>"
+            f"<div style='font-size:10px;color:#718096;margin-top:4px'>{note}</div>"
+            f"</div>", unsafe_allow_html=True)
+
+    sharpe = adv.get("sharpe")
+    sc     = "#00C853" if sharpe and sharpe > 1 else ("#FFC107" if sharpe and sharpe > 0 else "#EF5350")
+    _metric_card(c1, "Sharpe Ratio",
+                 sharpe, lambda v: f"{v:.2f}" if v else "—",
+                 "Risk-adjusted return vs Rf. >1 = good, >2 = excellent", sc)
+
+    alpha = adv.get("alpha")
+    ac    = "#00C853" if alpha and alpha > 0 else "#EF5350"
+    _metric_card(c2, "Alpha (vs S&P 500)",
+                 alpha, lambda v: f"{v:+.1%}" if v is not None else "—",
+                 "Excess return above CAPM expected return", ac)
+
+    beta_c = adv.get("beta_calc")
+    bc     = "#EF5350" if beta_c and beta_c > 1.3 else ("#FFC107" if beta_c and beta_c > 0.8 else "#66BB6A")
+    _metric_card(c3, "Beta (vs S&P 500)",
+                 beta_c, lambda v: f"{v:.2f}" if v is not None else "—",
+                 ">1.0 = more volatile than market", bc)
+
+    max_dd = adv.get("max_drawdown")
+    dc     = "#EF5350" if max_dd and max_dd < -0.20 else ("#FFC107" if max_dd and max_dd < -0.10 else "#66BB6A")
+    _metric_card(c4, "Max Drawdown",
+                 max_dd, lambda v: f"{v:.1%}" if v is not None else "—",
+                 "Worst peak-to-trough decline (1Y)", dc)
+
+    # Second row
+    c5,c6,c7,c8 = st.columns(4)
+
+    ann_ret = adv.get("ann_return")
+    rc      = "#00C853" if ann_ret and ann_ret > 0 else "#EF5350"
+    _metric_card(c5, "Ann. Return (1Y)",
+                 ann_ret, lambda v: f"{v:+.1%}" if v is not None else "—",
+                 "Annualised portfolio return", rc)
+
+    ann_vol = adv.get("ann_volatility")
+    vc      = "#EF5350" if ann_vol and ann_vol > 0.25 else ("#FFC107" if ann_vol and ann_vol > 0.15 else "#66BB6A")
+    _metric_card(c6, "Ann. Volatility",
+                 ann_vol, lambda v: f"{v:.1%}" if v is not None else "—",
+                 "Annualised standard deviation of returns", vc)
+
+    sortino = adv.get("sortino")
+    so_c    = "#00C853" if sortino and sortino > 1 else ("#FFC107" if sortino and sortino > 0 else "#EF5350")
+    _metric_card(c7, "Sortino Ratio",
+                 sortino, lambda v: f"{v:.2f}" if v is not None else "—",
+                 "Like Sharpe but only penalises downside vol", so_c)
+
+    calmar = adv.get("calmar")
+    cal_c  = "#00C853" if calmar and calmar > 1 else ("#FFC107" if calmar and calmar > 0 else "#EF5350")
+    _metric_card(c8, "Calmar Ratio",
+                 calmar, lambda v: f"{v:.2f}" if v is not None else "—",
+                 "Ann. return / Max Drawdown", cal_c)
+
+    # Drawdown context
+    dd_start = adv.get("max_dd_start")
+    dd_end   = adv.get("max_dd_end")
+    if dd_start and dd_end:
+        st.caption(f"⚠️ Worst drawdown period: "
+                   f"{pd.Timestamp(dd_start).strftime('%d %b %Y')} → "
+                   f"{pd.Timestamp(dd_end).strftime('%d %b %Y')}")
+
+    # Metric explanations
+    with st.expander("📖 What do these metrics mean?"):
+        st.markdown("""
+| Metric | Formula | Interpretation |
+|---|---|---|
+| **Sharpe Ratio** | `(Rp − Rf) / σp` | Risk-adjusted return. >1 good, >2 excellent, <0 losing to risk-free |
+| **Alpha** | `Rp − [Rf + β(Rm − Rf)]` | Outperformance vs what CAPM predicts. Positive = added value |
+| **Beta** | `Cov(Rp, Rm) / Var(Rm)` | Market sensitivity. >1 amplifies market moves, <1 defensive |
+| **Max Drawdown** | `(Trough − Peak) / Peak` | Worst historical loss from a peak. Key tail-risk measure |
+| **Sortino Ratio** | `(Rp − Rf) / σ_downside` | Like Sharpe but only counts downside volatility |
+| **Calmar Ratio** | `Ann. Return / |Max Drawdown|` | Return per unit of drawdown risk. >1 = good |
+
+*Rf = risk-free rate (US 10Y Treasury ≈ 4.5%). Calculations based on 1Y of daily price history.*
+        """)
+
+
+# ─── Benchmark Comparison Chart ──────────────────────────────────────────────
+
+def render_benchmark_chart(enriched: pd.DataFrame):
+    """Dynamic portfolio vs benchmark comparison chart."""
+    st.markdown("### 📊 Portfolio vs Benchmark")
+
+    # Controls row
+    ctrl1, ctrl2, ctrl3 = st.columns([2, 2, 1])
+    with ctrl1:
+        bench_name   = st.selectbox("Benchmark", list(BENCHMARKS.keys()),
+                                     index=0, key="bench_select")
+        bench_ticker = BENCHMARKS[bench_name]
+    with ctrl2:
+        timeframe    = st.selectbox("Timeframe", list(TIMEFRAMES.keys()),
+                                     index=list(TIMEFRAMES.keys()).index("YTD"),
+                                     key="bench_timeframe")
+        days         = TIMEFRAMES[timeframe]
+    with ctrl3:
+        show_drawdown = st.checkbox("Show drawdown", value=False, key="show_dd")
+
+    with st.spinner(f"Loading {bench_name} data…"):
+        data = fetch_benchmark_comparison(enriched, bench_ticker, days)
+
+    if data.get("error"):
+        st.warning(data["error"])
+        return
+
+    port_series  = data.get("portfolio", pd.Series())
+    bench_series = data.get("benchmark", pd.Series())
+
+    if port_series.empty:
+        st.warning("No portfolio history available for the selected period.")
+        return
+
+    # Build figure
+    rows       = 2 if show_drawdown else 1
+    row_heights = [0.7, 0.3] if show_drawdown else [1.0]
+    fig = go.Figure() if not show_drawdown else go.Figure()
+
+    from plotly.subplots import make_subplots as _msp
+    fig = _msp(rows=rows, cols=1,
+               shared_xaxes=True,
+               vertical_spacing=0.06,
+               row_heights=row_heights)
+
+    # ── Portfolio line ────────────────────────────────────────────────────
+    port_ret   = (port_series.iloc[-1] / 100 - 1) * 100 if len(port_series) > 1 else 0
+    port_color = "#00C853" if port_ret >= 0 else "#EF5350"
+    fig.add_trace(go.Scatter(
+        x=port_series.index, y=port_series.values,
+        name=f"Portfolio ({port_ret:+.1f}%)",
+        line=dict(color=port_color, width=2.5),
+        mode="lines",
+        hovertemplate="%{y:.1f} <extra>Portfolio</extra>",
+    ), row=1, col=1)
+
+    # ── Benchmark line ────────────────────────────────────────────────────
+    if not bench_series.empty:
+        bench_ret   = (bench_series.iloc[-1] / 100 - 1) * 100 if len(bench_series) > 1 else 0
+        bench_color = "#42A5F5"
+        fig.add_trace(go.Scatter(
+            x=bench_series.index, y=bench_series.values,
+            name=f"{bench_name} ({bench_ret:+.1f}%)",
+            line=dict(color=bench_color, width=2, dash="dot"),
+            mode="lines",
+            hovertemplate="%{y:.1f} <extra>" + bench_name + "</extra>",
+        ), row=1, col=1)
+
+    # ── Drawdown subplot ──────────────────────────────────────────────────
+    if show_drawdown:
+        raw_port = data.get("port_raw", pd.Series())
+        if not raw_port.empty:
+            roll_max = raw_port.cummax()
+            dd_series = (raw_port - roll_max) / roll_max * 100
+            fig.add_trace(go.Scatter(
+                x=dd_series.index, y=dd_series.values,
+                name="Drawdown",
+                fill="tozeroy",
+                fillcolor="rgba(239,83,80,0.2)",
+                line=dict(color="#EF5350", width=1),
+                mode="lines",
+                hovertemplate="%{y:.1f}%<extra>Drawdown</extra>",
+            ), row=2, col=1)
+            fig.add_hline(y=0, line=dict(color="rgba(255,255,255,0.3)", width=1), row=2, col=1)
+
+    # ── Reference line at 100 ─────────────────────────────────────────────
+    fig.add_hline(y=100, line=dict(color="rgba(255,255,255,0.2)", width=1, dash="dot"), row=1, col=1)
+
+    fig.update_layout(
+        height=420 if not show_drawdown else 580,
+        template="plotly_dark",
+        paper_bgcolor="#0e1117",
+        plot_bgcolor="#1a1d2e",
+        margin=dict(l=60, r=30, t=40, b=40),
+        legend=dict(orientation="h", x=0, y=1.06,
+                    font=dict(size=12), bgcolor="rgba(0,0,0,0)"),
+        hovermode="x unified",
+        xaxis=dict(
+            showgrid=False, tickfont=dict(size=11),
+            tickformat="%d %b '%y",
+            rangeslider=dict(visible=True, thickness=0.04),
+        ),
+        yaxis=dict(
+            showgrid=True, gridcolor="rgba(255,255,255,0.06)",
+            tickfont=dict(size=11), ticksuffix="",
+            title="Rebased (start = 100)",
+        ),
+        hoverlabel=dict(bgcolor="#1a1d2e", font_size=12),
+    )
+
+    if show_drawdown:
+        fig.update_yaxes(
+            showgrid=True, gridcolor="rgba(255,255,255,0.06)",
+            tickfont=dict(size=10), ticksuffix="%",
+            title="Drawdown %", row=2, col=1
+        )
+
+    st.plotly_chart(fig, use_container_width=True)
+    st.caption(
+        "Chart rebased to 100 at the start of the selected period. "
+        "Portfolio value = sum of (quantity × closing price) for each holding. "
+        "Range slider at bottom for zoom."
+    )
+
 # ─── Main Portfolio Page ──────────────────────────────────────────────────────
 
 def render_portfolio_page():
@@ -541,6 +770,14 @@ def render_portfolio_page():
 
     # Risk
     render_risk_section(metrics, enriched)
+    st.divider()
+
+    # Advanced metrics (Sharpe, Alpha, Beta, Max Drawdown)
+    render_advanced_metrics(enriched)
+    st.divider()
+
+    # Benchmark comparison chart
+    render_benchmark_chart(enriched)
     st.divider()
 
     # Positions table
