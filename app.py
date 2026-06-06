@@ -615,7 +615,7 @@ def build_stock_benchmark_chart(ticker: str, hist: pd.DataFrame,
     if show_vol:
         fig.update_yaxes(tickfont=dict(size=9), row=2, col=1)
 
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, use_container_width=True, key=f"pc_{ticker}_1")
 
 def build_financials_chart(fund, ticker):
     rev = fund.get("revenue_series", {}); ni = fund.get("net_income_series", {})
@@ -961,7 +961,7 @@ def render_earnings_section(data, ticker, earn_rows, cal_info, estimates, eps_tr
         st.markdown(section_header("📉 EPS Estimate Revisions"), unsafe_allow_html=True)
         fig_trend = build_eps_trend_chart(eps_trend_data, ticker)
         if fig_trend.data:
-            st.plotly_chart(fig_trend, use_container_width=True)
+            st.plotly_chart(fig_trend, use_container_width=True, key=f"pc_{ticker}_2")
 
     # ── Historical Earnings Surprise ─────────────────────────────────────────
     past = [r for r in earn_rows if not r["is_future"]]
@@ -969,7 +969,7 @@ def render_earnings_section(data, ticker, earn_rows, cal_info, estimates, eps_tr
     if past:
         fig_sur = build_earnings_surprise_chart(earn_rows, ticker)
         if fig_sur.data:
-            st.plotly_chart(fig_sur, use_container_width=True)
+            st.plotly_chart(fig_sur, use_container_width=True, key=f"pc_{ticker}_3")
 
         # Summary stats
         surprises = [r["surprise_pct"] for r in past if r.get("surprise_pct") is not None]
@@ -1383,7 +1383,7 @@ def render_cca_tab(ticker, info, peer_data, dcf, current_price):
     if ff:
         fig_ff = build_football_field(ff, dcf, current_price, native_ccy)
         if fig_ff.data:
-            st.plotly_chart(fig_ff, use_container_width=True)
+            st.plotly_chart(fig_ff, use_container_width=True, key=f"pc_{ticker}_4")
 
     # ── Methodology explanation ───────────────────────────────────────────────
     with st.expander("📖 How CCA works (BIWS / JPMorgan methodology)", expanded=False):
@@ -1909,7 +1909,7 @@ def render_stock_tab(ticker, data, dcf, fund, indicators, signals,
                 hist_price = data.get("hist_2y", pd.DataFrame())
             if not hist_price.empty:
                 fig_price = build_current_price_chart(hist_price, ticker, info)
-                st.plotly_chart(fig_price, use_container_width=True)
+                st.plotly_chart(fig_price, use_container_width=True, key=f"pc_{ticker}_5")
             st.markdown(section_header("Key Metrics"), unsafe_allow_html=True)
             de_raw = info.get("debtToEquity"); de_norm = (de_raw or 0) / 100
             render_mrow("pe_trailing",   "P/E (TTM)",        fmt(info.get("trailingPE"), dec=1))
@@ -1950,7 +1950,7 @@ def render_stock_tab(ticker, data, dcf, fund, indicators, signals,
 
     # ── Financials & DCF ──────────────────────────────────────────────────────
     with tabs[1]:
-        st.plotly_chart(build_financials_chart(fund, ticker), use_container_width=True)
+        st.plotly_chart(build_financials_chart(fund, ticker), use_container_width=True, key=f"pc_{ticker}_6")
         with st.expander("📋 Cash Flow Summary"):
             cfs = fund.get("cashflows", {})
             c1, c2, c3 = st.columns(3)
@@ -2099,7 +2099,7 @@ def render_stock_tab(ticker, data, dcf, fund, indicators, signals,
                 fig_sens = build_sensitivity_chart(sens, dcf.get("current_price",0) or cp, 
                                                     info.get("currency","USD"))
                 if fig_sens.data:
-                    st.plotly_chart(fig_sens, use_container_width=True)
+                    st.plotly_chart(fig_sens, use_container_width=True, key=f"pc_{ticker}_7")
 
         # Growth rate sources
         gr = dcf.get("growth_rates", {})
@@ -2278,7 +2278,7 @@ Each model answers a **different question**:
             with c2:
                 fig = build_peer_chart(comparison, ticker)
                 if fig.data:
-                    st.plotly_chart(fig, use_container_width=True)
+                    st.plotly_chart(fig, use_container_width=True, key=f"pc_{ticker}_8")
 
         if peer_data:
             st.markdown(section_header("Full Peer Table"), unsafe_allow_html=True)
@@ -2313,7 +2313,7 @@ Each model answers a **different question**:
         if hist.empty or not indicators:
             st.warning("Insufficient price history for technical analysis.")
         else:
-            st.plotly_chart(build_price_chart(hist, indicators, ticker), use_container_width=True)
+            st.plotly_chart(build_price_chart(hist, indicators, ticker), use_container_width=True, key=f"pc_{ticker}_9")
 
         if signals:
             st.markdown(section_header("Signal Breakdown"), unsafe_allow_html=True)
@@ -2345,7 +2345,7 @@ Each model answers a **different question**:
         with c1:
             fig_sent = build_sentiment_donut(sentiment, ticker)
             if fig_sent.data:
-                st.plotly_chart(fig_sent, use_container_width=True)
+                st.plotly_chart(fig_sent, use_container_width=True, key=f"pc_{ticker}_10")
             else:
                 st.info("No analyst rating data available.")
 
@@ -2364,7 +2364,7 @@ Each model answers a **different question**:
         with c2:
             fig_earn = build_earnings_surprise_chart(earn_rows, ticker)
             if fig_earn.data:
-                st.plotly_chart(fig_earn, use_container_width=True)
+                st.plotly_chart(fig_earn, use_container_width=True, key=f"pc_{ticker}_11")
 
             # ── Recent analyst rating changes ─────────────────────────────
             recs_df = data.get("recommendations")
@@ -2720,7 +2720,7 @@ def render_prediction_tab(ticker, info, dcf, sentiment, scoring, signals, fund):
             yaxis=dict(tickfont=dict(size=11)),
             showlegend=False,
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, use_container_width=True, key=f"pc_{ticker}_12")
 
     # ── Methodology breakdown ────────────────────────────────────────────────
     st.markdown(section_header("📐 How this prediction is built"), unsafe_allow_html=True)
