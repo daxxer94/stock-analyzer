@@ -212,8 +212,8 @@ def build_current_price_chart(hist: pd.DataFrame, ticker: str, info: dict) -> go
         plot_bgcolor="#1a1d2e",
         showlegend=True,
         legend=dict(
-            orientation="h",
-            x=0, y=1.18,          # above chart, no overlap with title
+            orientation="h", yanchor="bottom",
+            x=0, y=-0.15,          # above chart, no overlap with title
             font=dict(size=12),
             bgcolor="rgba(0,0,0,0)",
         ),
@@ -312,7 +312,7 @@ def build_price_chart(hist, ind, ticker):
         title=dict(text=f"{ticker} — Technical Analysis", font_size=15, x=0.01),
         margin=dict(l=50, r=30, t=60, b=40),
         xaxis_rangeslider_visible=False,
-        legend=dict(orientation="h", y=1.07, x=0, font_size=11,
+        legend=dict(orientation="h", yanchor="bottom", y=-0.15, x=0, font_size=11,
                     bgcolor="rgba(0,0,0,0)", borderwidth=0),
         paper_bgcolor="#0e1117", plot_bgcolor="#1a1d2e",
         hoverlabel=dict(bgcolor="#1a1d2e", font_size=12),
@@ -486,135 +486,183 @@ def build_stock_benchmark_chart(ticker: str, hist: pd.DataFrame,
                                   info: dict) -> None:
     """
     Render an interactive stock vs benchmark comparison chart.
-    Called inside the Technical Analysis tab.
+    Both series aligned to a COMMON start date and rebased to 100.
+    Y-axis range is calculated with explicit padding to avoid exaggeration.
+    Legend sits below the chart title — no overlap.
     """
     from portfolio import BENCHMARKS, TIMEFRAMES
     import plotly.graph_objects as go
     from plotly.subplots import make_subplots
+    import yfinance as yf
 
-    native_ccy = info.get("currency","USD")
-    name       = info.get("shortName") or ticker
-
+    name = info.get("shortName") or ticker
     st.markdown(section_header("📊 Price vs Benchmark"), unsafe_allow_html=True)
-    st.caption("Both lines rebased to 100 at the start of the selected period.")
 
     col1, col2, col3 = st.columns([2.5, 2, 0.8])
     with col1:
-        bench_name = st.selectbox(
-            "Benchmark", list(BENCHMARKS.keys()), index=0,
-            key=f"stock_bench_{ticker}")
+        bench_name   = st.selectbox("Benchmark", list(BENCHMARKS.keys()), index=0,
+                                     key=f"stock_bench_{ticker}")
         bench_ticker = BENCHMARKS[bench_name]
     with col2:
         tf_options = list(TIMEFRAMES.keys())
-        tf = st.selectbox(
-            "Timeframe", tf_options,
-            index=tf_options.index("1Y") if "1Y" in tf_options else 4,
-            key=f"stock_tf_{ticker}")
+        tf   = st.selectbox("Timeframe", tf_options,
+                             index=tf_options.index("1Y") if "1Y" in tf_options else 4,
+                             key=f"stock_tf_{ticker}")
         days = TIMEFRAMES[tf]
     with col3:
         show_vol = st.checkbox("Volume", value=False, key=f"vol_{ticker}")
 
-    # Determine yfinance period string
     period_map = {7:"5d",30:"1mo",90:"3mo",180:"6mo",
                   365:"1y",730:"2y",1095:"3y",None:"ytd"}
     period = period_map.get(days, "1y")
 
-    import yfinance as yf
-
     @st.cache_data(ttl=3600, show_spinner=False)
-    def _fetch(sym, per):
+    def _fetch_close(sym, per):
         try:
             h = yf.Ticker(sym).history(period=per)
-            return h["Close"].dropna() if h is not None and not h.empty else pd.Series()
+            if h is not None and not h.empty:
+                s = h["Close"].dropna()
+                # Normalise timezone to UTC-naive for alignment
+                if s.index.tz is not None:
+                    s.index = s.index.tz_localize(None)
+                return s
         except Exception:
-            return pd.Series()
+            pass
+        return pd.Series(dtype=float)
 
-    stock_hist = _fetch(ticker, period)
-    bench_hist = _fetch(bench_ticker, period)
+    stock_raw = _fetch_close(ticker, period)
+    bench_raw = _fetch_close(bench_ticker, period)
 
-    # YTD filter
-    if days is None:
-        ytd = pd.Timestamp(pd.Timestamp.now().year, 1, 1)
-        def _tz_filter(s, t):
-            if s.empty: return s
-            t2 = t.tz_localize(s.index.tz) if s.index.tz else t.tz_localize(None)
-            return s[s.index >= t2]
-        stock_hist = _tz_filter(stock_hist, ytd)
-        bench_hist = _tz_filter(bench_hist, ytd)
-    elif days:
-        now = pd.Timestamp.now()
-        cutoff = now - pd.Timedelta(days=days)
-        def _day_filter(s):
-            if s.empty: return s
-            c2 = cutoff.tz_localize(s.index.tz) if s.index.tz else cutoff.tz_localize(None)
-            return s[s.index >= c2]
-        stock_hist = _day_filter(stock_hist)
-        bench_hist = _day_filter(bench_hist)
-
-    if stock_hist.empty:
+    if stock_raw.empty:
         st.warning("No price history available for this ticker.")
         return
 
-    # Rebase to 100
-    s_rebased = stock_hist / stock_hist.iloc[0] * 100
-    b_rebased = bench_hist / bench_hist.iloc[0] * 100 if not bench_hist.empty else pd.Series()
+    # ── Date filtering ────────────────────────────────────────────────────────
+    if days is None:   # YTD
+        cutoff = pd.Timestamp(pd.Timestamp.now().year, 1, 1)
+    elif days:
+        cutoff = pd.Timestamp.now() - pd.Timedelta(days=days)
+    else:
+        cutoff = stock_raw.index[0]
+
+    stock_raw = stock_raw[stock_raw.index >= cutoff]
+    bench_raw = bench_raw[bench_raw.index >= cutoff] if not bench_raw.empty else bench_raw
+
+    if stock_raw.empty:
+        st.info("No data for selected timeframe.")
+        return
+
+    # ── Align to common start date ────────────────────────────────────────────
+    # Both series must start on the same date for a fair comparison.
+    # Find the latest of the two first-available dates.
+    start_date = stock_raw.index[0]
+    if not bench_raw.empty:
+        start_date = max(start_date, bench_raw.index[0])
+        stock_raw  = stock_raw[stock_raw.index >= start_date]
+        bench_raw  = bench_raw[bench_raw.index >= start_date]
+
+    # ── Rebase to 100 at the common start ────────────────────────────────────
+    s_rebased = stock_raw / stock_raw.iloc[0] * 100
+    b_rebased = bench_raw / bench_raw.iloc[0] * 100 if not bench_raw.empty else pd.Series()
+
+    # ── Y-axis range with proportional padding ────────────────────────────────
+    all_vals = list(s_rebased.values)
+    if not b_rebased.empty:
+        all_vals += list(b_rebased.values)
+    y_min = min(all_vals)
+    y_max = max(all_vals)
+    y_range = y_max - y_min
+    # Add 8% padding above and below; minimum visible range of ±5 points
+    pad     = max(y_range * 0.08, 5)
+    y_axis_range = [max(0, y_min - pad), y_max + pad]
 
     rows = 2 if show_vol else 1
     fig  = make_subplots(rows=rows, cols=1, shared_xaxes=True,
-                         vertical_spacing=0.06,
-                         row_heights=[0.75,0.25] if show_vol else [1.0])
+                         vertical_spacing=0.08,
+                         row_heights=[0.75, 0.25] if show_vol else [1.0])
 
-    s_ret  = (s_rebased.iloc[-1]/100 - 1)*100 if len(s_rebased)>1 else 0
-    s_col  = "#00C853" if s_ret >= 0 else "#EF5350"
+    s_ret = (s_rebased.iloc[-1] - 100) if len(s_rebased) > 1 else 0
+    s_col = "#00C853" if s_ret >= 0 else "#EF5350"
     fig.add_trace(go.Scatter(
-        x=s_rebased.index, y=s_rebased.values,
+        x=s_rebased.index, y=s_rebased.round(2).values,
         name=f"{ticker}  ({s_ret:+.1f}%)",
-        line=dict(color=s_col, width=2.5), mode="lines",
-        hovertemplate="%{y:.1f}<extra>" + ticker + "</extra>",
+        line=dict(color=s_col, width=2.5),
+        mode="lines",
+        hovertemplate="<b>%{x|%d %b %Y}</b><br>" + ticker + ": %{y:.1f}<extra></extra>",
     ), row=1, col=1)
 
     if not b_rebased.empty:
-        b_ret  = (b_rebased.iloc[-1]/100 - 1)*100 if len(b_rebased)>1 else 0
-        b_col  = "#42A5F5"
+        b_ret = (b_rebased.iloc[-1] - 100) if len(b_rebased) > 1 else 0
         fig.add_trace(go.Scatter(
-            x=b_rebased.index, y=b_rebased.values,
+            x=b_rebased.index, y=b_rebased.round(2).values,
             name=f"{bench_name}  ({b_ret:+.1f}%)",
-            line=dict(color=b_col, width=2, dash="dot"), mode="lines",
-            hovertemplate="%{y:.1f}<extra>" + bench_name + "</extra>",
+            line=dict(color="#42A5F5", width=2, dash="dot"),
+            mode="lines",
+            hovertemplate="<b>%{x|%d %b %Y}</b><br>" + bench_name + ": %{y:.1f}<extra></extra>",
         ), row=1, col=1)
 
-    fig.add_hline(y=100, line=dict(color="rgba(255,255,255,0.2)", dash="dot"),
+    # Baseline at 100
+    fig.add_hline(y=100,
+                  line=dict(color="rgba(255,255,255,0.25)", width=1, dash="dot"),
                   row=1, col=1)
 
     if show_vol and not hist.empty and "Volume" in hist.columns:
-        vols  = hist["Volume"].tail(len(s_rebased))
-        vcols = ["#00C853" if c >= o else "#EF5350"
-                 for c, o in zip(hist["Close"].tail(len(s_rebased)),
-                                 hist["Open"].tail(len(s_rebased)))]
+        v_idx = hist.index
+        if v_idx.tz is not None:
+            v_idx = v_idx.tz_localize(None)
+        v_mask = v_idx >= start_date
+        v_hist = hist["Volume"][v_mask]
+        o_hist = hist["Open"][v_mask]
+        c_hist = hist["Close"][v_mask]
+        vcols  = ["#00C853" if c >= o else "#EF5350"
+                  for c, o in zip(c_hist, o_hist)]
         fig.add_trace(go.Bar(
-            x=hist.index[-len(s_rebased):], y=vols.values,
+            x=v_idx[v_mask], y=v_hist.values,
             name="Volume", marker_color=vcols, showlegend=False,
             hovertemplate="%{y:,.0f}<extra>Volume</extra>",
         ), row=2, col=1)
 
+    # ── Layout: legend BELOW title, no overlap ────────────────────────────────
     fig.update_layout(
-        height=400 if not show_vol else 520,
+        height=440 if not show_vol else 560,
         template="plotly_dark",
-        paper_bgcolor="#0e1117", plot_bgcolor="#1a1d2e",
-        margin=dict(l=50, r=30, t=30, b=40),
-        legend=dict(orientation="h", x=0, y=1.05,
-                    font=dict(size=11), bgcolor="rgba(0,0,0,0)"),
+        paper_bgcolor="#0e1117",
+        plot_bgcolor="#1a1d2e",
+        margin=dict(l=55, r=30, t=20, b=90),   # extra bottom margin for legend
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=-0.20,          # below the chart area
+            xanchor="left",
+            x=0,
+            font=dict(size=11),
+            bgcolor="rgba(0,0,0,0)",
+        ),
         hovermode="x unified",
-        xaxis=dict(showgrid=False, tickfont=dict(size=10),
-                   tickformat="%d %b '%y",
-                   rangeslider=dict(visible=True, thickness=0.04)),
-        yaxis=dict(showgrid=True, gridcolor="rgba(255,255,255,0.06)",
-                   tickfont=dict(size=10), title="Rebased to 100"),
+        xaxis=dict(
+            showgrid=False,
+            tickfont=dict(size=10),
+            tickformat="%d %b '%y",
+            rangeslider=dict(visible=True, thickness=0.04),
+        ),
+        yaxis=dict(
+            showgrid=True,
+            gridcolor="rgba(255,255,255,0.07)",
+            tickfont=dict(size=10),
+            title=dict(text="Return (start = 100)", font=dict(size=10)),
+            range=y_axis_range,
+            tickformat=".1f",
+        ),
         hoverlabel=dict(bgcolor="#1a1d2e", font_size=12),
     )
     if show_vol:
-        fig.update_yaxes(tickfont=dict(size=9), row=2, col=1)
+        fig.update_yaxes(tickfont=dict(size=9), title="Volume", row=2, col=1)
 
+    st.caption(
+        f"Rebased to 100 on {pd.Timestamp(start_date).strftime('%d %b %Y')}. "
+        "Both lines start at the same date for a fair comparison. "
+        "Range slider below for zoom."
+    )
     st.plotly_chart(fig, use_container_width=True, key=f"pc_{ticker}_1")
 
 def build_financials_chart(fund, ticker):
@@ -691,7 +739,7 @@ def build_financials_chart(fund, ticker):
         # Legend 2 (margins): just above panel 2
         # Plotly supports only one legend — use legend2 for second group
         legend=dict(
-            orientation="h", x=0.55, y=1.02,
+            orientation="h", x=0.55, y=-0.15,
             xanchor="left", yanchor="bottom",
             font=dict(size=11), bgcolor="rgba(0,0,0,0)",
             tracegroupgap=0,
@@ -785,7 +833,7 @@ def build_price_overview_chart(hist: pd.DataFrame, ticker: str) -> go.Figure:
         ),
         margin=dict(l=50, r=30, t=50, b=30),
         xaxis_rangeslider_visible=False,
-        legend=dict(orientation="h", y=1.07, x=0, font_size=11,
+        legend=dict(orientation="h", yanchor="bottom", y=-0.15, x=0, font_size=11,
                     bgcolor="rgba(0,0,0,0)"),
         paper_bgcolor="#0e1117",
         plot_bgcolor="#1a1d2e",

@@ -605,14 +605,30 @@ def render_benchmark_chart(enriched: pd.DataFrame):
     # ── Reference line at 100 ─────────────────────────────────────────────
     fig.add_hline(y=100, line=dict(color="rgba(255,255,255,0.2)", width=1, dash="dot"), row=1, col=1)
 
+    # Y-axis range with proportional padding to avoid exaggeration
+    _all_v = list(port_series.values) + (list(bench_series.values) if not bench_series.empty else [])
+    if _all_v:
+        _ymin = min(_all_v); _ymax = max(_all_v)
+        _pad  = max((_ymax - _ymin) * 0.08, 5)
+        _yr   = [max(0, _ymin - _pad), _ymax + _pad]
+    else:
+        _yr = [80, 130]
+
     fig.update_layout(
-        height=420 if not show_drawdown else 580,
+        height=460 if not show_drawdown else 600,
         template="plotly_dark",
         paper_bgcolor="#0e1117",
         plot_bgcolor="#1a1d2e",
-        margin=dict(l=60, r=30, t=40, b=40),
-        legend=dict(orientation="h", x=0, y=1.06,
-                    font=dict(size=12), bgcolor="rgba(0,0,0,0)"),
+        margin=dict(l=60, r=30, t=20, b=90),
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=-0.20,
+            xanchor="left",
+            x=0,
+            font=dict(size=12),
+            bgcolor="rgba(0,0,0,0)",
+        ),
         hovermode="x unified",
         xaxis=dict(
             showgrid=False, tickfont=dict(size=11),
@@ -620,9 +636,11 @@ def render_benchmark_chart(enriched: pd.DataFrame):
             rangeslider=dict(visible=True, thickness=0.04),
         ),
         yaxis=dict(
-            showgrid=True, gridcolor="rgba(255,255,255,0.06)",
-            tickfont=dict(size=11), ticksuffix="",
-            title="Rebased (start = 100)",
+            showgrid=True, gridcolor="rgba(255,255,255,0.07)",
+            tickfont=dict(size=11),
+            title=dict(text="Return (start = 100)", font=dict(size=10)),
+            range=_yr,
+            tickformat=".1f",
         ),
         hoverlabel=dict(bgcolor="#1a1d2e", font_size=12),
     )
