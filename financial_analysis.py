@@ -716,3 +716,242 @@ def run_deep_analysis(data: dict, info: dict) -> dict:
             results[key] = {"error": str(e)}
 
     return results
+
+# ─── Government & External Factors ───────────────────────────────────────────
+
+GOVERNMENT_FACTORS = {
+    "Technology": {
+        "regulatory_risk":  "high",
+        "factors": [
+            ("🏛️ Antitrust / Competition Law",
+             "Big Tech faces active antitrust scrutiny in the US (DOJ/FTC), EU (DMA/DSA), and China. "
+             "Forced breakups, interoperability mandates, or data-sharing requirements directly cap "
+             "platform revenue and monetisation models. Current investigations: Google search, Meta "
+             "acquisitions, Apple App Store, Microsoft/Activision."),
+            ("🔒 Data Privacy Regulation",
+             "GDPR (EU), CCPA (California), PIPL (China) impose consent requirements, "
+             "data minimisation, and fines up to 4% of global revenue. "
+             "Fragmented global regimes increase compliance costs for international tech companies."),
+            ("🤖 AI Regulation",
+             "EU AI Act (2024) creates risk-based tiers — high-risk AI systems face conformity "
+             "assessments and bans. US executive orders on AI safety. China has its own generative "
+             "AI regulations. Compliance costs rise; competitive dynamics shift toward well-resourced incumbents."),
+            ("🔧 Semiconductor Export Controls",
+             "US BIS restrictions (Entity List, ECRA) limit export of advanced chips and "
+             "manufacturing equipment to China. Affects Nvidia A100/H100, ASML EUV machines, "
+             "TSMC advanced nodes. Creates bifurcated global chip supply chain."),
+            ("💰 Tax — OECD Pillar 2",
+             "Global minimum corporate tax of 15% reduces tax arbitrage for tech companies "
+             "with IP holding structures in low-tax jurisdictions (Ireland, Netherlands, Singapore)."),
+        ],
+    },
+    "Healthcare": {
+        "regulatory_risk":  "very high",
+        "factors": [
+            ("💊 Drug Pricing Legislation",
+             "US Inflation Reduction Act (IRA, 2022) allows Medicare to negotiate prices for "
+             "selected drugs. Directly impacts pharma revenue on blockbusters. "
+             "EU Reference Pricing links member state prices, creating downward pressure."),
+            ("🧪 FDA / EMA Approval Process",
+             "Clinical trial outcomes are binary events for biotech. FDA Complete Response Letters "
+             "(CRLs) and advisory committee votes are key catalysts. "
+             "Accelerated approval pathways (Breakthrough Therapy) compress time-to-market."),
+            ("🏥 Healthcare Coverage Policy",
+             "ACA stability in the US, NHS budget pressures in UK, and EU universal coverage "
+             "systems all affect hospital volumes, reimbursement rates, and medtech pricing."),
+            ("🧬 Gene Therapy / CRISPR Regulation",
+             "Emerging regulatory framework for gene editing therapies (FDA CAR-T framework). "
+             "First CRISPR therapy approved 2023. Regulatory clarity is gradually improving."),
+            ("⚖️ Liability & Litigation",
+             "Product liability, clinical trial failures, and mass tort litigation "
+             "(e.g. opioid settlements $50B+) represent tail risks for pharma companies."),
+        ],
+    },
+    "Financial Services": {
+        "regulatory_risk":  "very high",
+        "factors": [
+            ("🏦 Basel III / IV Capital Requirements",
+             "Basel IV endgame rules require banks to hold more capital against market, "
+             "credit, and operational risks. US banks face ~19% RWA increase under Basel III "
+             "endgame proposals. Reduces ROE and dividend capacity."),
+            ("📊 Stress Testing (CCAR / EBA)",
+             "Annual Fed CCAR and EU EBA stress tests constrain capital returns (buybacks, dividends). "
+             "Failure or near-failure results in immediate capital restrictions."),
+            ("💳 Fintech / Open Banking",
+             "PSD2 (EU) and evolving US open banking rules require banks to share customer "
+             "data with third parties via APIs. Disintermediation risk from fintech challengers."),
+            ("🌐 Digital Currency (CBDC)",
+             "Central bank digital currencies in 130+ countries under exploration. "
+             "Retail CBDC could displace bank deposits, threatening net interest income."),
+            ("🔍 Consumer Protection",
+             "CFPB (US) and FCA (UK) enforcement actions on fees, lending practices, and "
+             "credit card rates. Increased scrutiny raises compliance costs and limits fee income."),
+        ],
+    },
+    "Energy": {
+        "regulatory_risk":  "high",
+        "factors": [
+            ("🌱 Climate Policy / Carbon Pricing",
+             "EU ETS carbon prices €60-80/tonne. US EPA methane regulations. "
+             "IRA production tax credits for clean energy. Carbon border adjustment mechanism (CBAM) "
+             "affects cross-border energy trade competitiveness."),
+            ("⚡ Energy Transition Mandates",
+             "EU Fit for 55, US IRA, and national net-zero targets drive renewable capacity "
+             "buildout. Fossil fuel companies face stranded asset risk on long-dated reserves. "
+             "Permitting reform affects speed of new project approvals."),
+            ("🛢️ OPEC+ Production Decisions",
+             "OPEC+ production quotas directly set oil price floor. Saudi Arabia's fiscal "
+             "break-even (~$80/bbl) anchors decisions. Spare capacity and geopolitical "
+             "tensions (Russia-Ukraine) create supply volatility."),
+            ("🚢 Shipping / Jones Act",
+             "US Jones Act restricts domestic maritime transport to US-flagged vessels. "
+             "EU shipping emissions now under ETS. LNG export terminal approvals subject to "
+             "political and environmental review."),
+        ],
+    },
+    "Consumer Cyclical": {
+        "regulatory_risk":  "moderate",
+        "factors": [
+            ("🛍️ Consumer Protection / FTC",
+             "FTC advertising standards, warranty requirements, and planned obsolescence rules "
+             "increase compliance costs. EU product regulation (Right to Repair) affects electronics."),
+            ("🚗 EV Mandates",
+             "EU ban on ICE vehicle sales by 2035. California ZEV mandates. "
+             "IRA EV tax credits ($7,500) boost US EV demand but require domestic battery sourcing."),
+            ("📦 E-Commerce Regulation",
+             "EU Digital Services Act imposes marketplace liability. "
+             "Customs changes (de minimis threshold) affect cross-border e-commerce."),
+            ("💰 Minimum Wage Increases",
+             "US federal minimum wage debate and state-level increases (CA $20/hr fast food). "
+             "Increases labour costs for retail, restaurants, and service companies."),
+        ],
+    },
+    "Industrials": {
+        "regulatory_risk":  "moderate",
+        "factors": [
+            ("🏗️ Infrastructure Legislation",
+             "US IIJA ($1.2T), CHIPS Act ($52B), IRA ($369B) drive multi-year demand for "
+             "industrial equipment, construction, and advanced manufacturing."),
+            ("🔀 Reshoring / Supply Chain Policy",
+             "US-China decoupling, friend-shoring initiatives, and CHIPS Act domestic fab "
+             "incentives benefit US industrial manufacturers. Mexico nearshoring boom."),
+            ("✈️ Defence Spending",
+             "NATO 2% GDP target, European rearmament post-Ukraine, and Indo-Pacific "
+             "security spending drive sustained defence procurement increases."),
+            ("🌍 Trade Policy / Tariffs",
+             "US Section 301 tariffs on China (25% on $300B+ goods), EU reciprocal measures. "
+             "IRA domestic content requirements favour US manufacturers."),
+        ],
+    },
+    "Communication Services": {
+        "regulatory_risk":  "high",
+        "factors": [
+            ("📡 Spectrum Allocation",
+             "FCC and national regulators control spectrum licences (5G, satellite). "
+             "Spectrum auctions represent multi-billion dollar capital outlays for telecom companies."),
+            ("🌐 Net Neutrality",
+             "FCC net neutrality rules reinstated in the US (2024). EU already enforces "
+             "open internet rules. Affects ISP ability to monetise network tiers."),
+            ("🎬 Content Regulation",
+             "EU AVMS Directive requires 30% European content on streaming platforms. "
+             "Australia and Canada have local content quotas. Increases content costs."),
+            ("🛡️ Cybersecurity Mandates",
+             "EU NIS2 Directive, US CISA requirements. Mandatory incident reporting "
+             "within 72 hours. Significant investment in security infrastructure required."),
+        ],
+    },
+    "Basic Materials": {
+        "regulatory_risk":  "moderate",
+        "factors": [
+            ("⛏️ Mining Permits & ESG",
+             "Permitting timelines for new mines average 10-17 years in the US. "
+             "ESG investor pressure limits financing for new fossil fuel projects. "
+             "Critical mineral strategies (US, EU, Japan) prioritise domestic sourcing."),
+            ("🧪 REACH / Chemical Regulation",
+             "EU REACH restricts hazardous substances. US EPA TSCA reforms. "
+             "Phase-outs of PFAS affect specialty chemical producers."),
+            ("💹 Export Restrictions",
+             "China's export controls on gallium, germanium, and graphite (2023) affect "
+             "semiconductor and battery supply chains. Indonesia's nickel export ban "
+             "forces downstream processing investment."),
+        ],
+    },
+    "Real Estate": {
+        "regulatory_risk":  "moderate",
+        "factors": [
+            ("🏠 Rent Control / Zoning",
+             "Local rent control ordinances limit NOI growth for residential REITs. "
+             "Exclusionary zoning constrains housing supply, supporting values but "
+             "creating political pressure for reform."),
+            ("🏗️ Building Codes / Energy Efficiency",
+             "EU Energy Performance of Buildings Directive (EPBD) requires major retrofits "
+             "of existing stock. US energy codes increasingly stringent. CapEx burden."),
+            ("📋 REIT Tax Treatment",
+             "REIT structure requires 90% income distribution. Corporate tax rate changes "
+             "affect cost of retaining capital. Carried interest rules affect fund managers."),
+        ],
+    },
+    "Utilities": {
+        "regulatory_risk":  "high",
+        "factors": [
+            ("⚡ Allowed Rate of Return",
+             "State/federal regulators set allowed ROE for rate-based utilities (typically "
+             "9-10%). Rate case outcomes directly determine earnings. Lag between cost "
+             "increases and rate recovery creates timing risk."),
+            ("☀️ Renewable Portfolio Standards",
+             "US state RPS and EU renewable energy targets mandate clean energy procurement. "
+             "Creates long-term demand certainty but requires significant capital deployment."),
+            ("🔋 Grid Modernisation",
+             "FERC interconnection reforms, IRA transmission incentives, and state grid "
+             "modernisation plans drive utility capex. Rate-based capex is earnings-accretive."),
+            ("🌪️ Climate Liability",
+             "California wildfires, Hurricane exposure. Inverse condemnation risk for "
+             "power lines. Pacific Gas & Electric bankruptcy precedent. Growing tail risk."),
+        ],
+    },
+}
+
+RISK_COLORS = {
+    "very high": "#EF5350",
+    "high":      "#FF9800",
+    "moderate":  "#FFC107",
+    "low":       "#66BB6A",
+}
+
+
+def get_government_factors(info: dict) -> dict:
+    sector = info.get("sector","")
+    profile = GOVERNMENT_FACTORS.get(sector, {})
+
+    # Company-specific layer
+    country  = info.get("country","")
+    mktcap   = float(info.get("marketCap") or 0)
+    industry = info.get("industry","")
+
+    extra = []
+    if country in ("China","Hong Kong") or ".HK" in info.get("exchange",""):
+        extra.append(("🇨🇳 China Regulatory Risk",
+                      "Chinese companies face VIE structure uncertainty, delisting risk on "
+                      "US exchanges (HFCAA), and domestic regulatory crackdowns "
+                      "(tech, tutoring, gaming). State-owned enterprise dynamics may override "
+                      "shareholder returns."))
+    if country == "Russia":
+        extra.append(("🚫 Sanctions Risk",
+                      "OFAC, EU, and UK sanctions restrict capital access, technology imports, "
+                      "and payment systems. Most Western institutional investors have divested."))
+    if mktcap < 2e9:
+        extra.append(("📋 Small-Cap Regulatory Burden",
+                      "Smaller companies face disproportionate regulatory compliance costs "
+                      "relative to revenue. Less lobbying influence than large-cap peers."))
+    if "pharma" in industry.lower() or "biotechnology" in industry.lower():
+        extra.append(("🧬 FDA Approval Binary Risk",
+                      "A single FDA approval or rejection can move the stock 50-90%. "
+                      "Pre-revenue biotechs are especially exposed to clinical and "
+                      "regulatory outcomes."))
+
+    return {
+        "sector":          sector,
+        "regulatory_risk": profile.get("regulatory_risk","moderate"),
+        "factors":         profile.get("factors",[]) + extra,
+        "country":         country,
+    }

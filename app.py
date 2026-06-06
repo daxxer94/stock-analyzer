@@ -33,7 +33,8 @@ from sec_data            import (fetch_news, build_news_search_links, fetch_sec_
 from screener_ui         import render_screener_page
 from portfolio_ui        import render_portfolio_page
 from cca                 import run_cca, format_cca_peer_table
-from financial_analysis  import run_deep_analysis, DRIVER_COLORS, SENSITIVITY_COLORS, SECTOR_MACRO_SENSITIVITY
+from financial_analysis  import (run_deep_analysis, DRIVER_COLORS, SENSITIVITY_COLORS,
+                               SECTOR_MACRO_SENSITIVITY, get_government_factors, RISK_COLORS)
 
 # ─── Page config ─────────────────────────────────────────────────────────────
 try:
@@ -474,6 +475,142 @@ def build_sensitivity_chart(sens: dict, current_price: float, native_ccy: str) -
     )
     return fig
 
+
+
+def build_stock_benchmark_chart(ticker: str, hist: pd.DataFrame,
+                                  info: dict) -> None:
+    """
+    Render an interactive stock vs benchmark comparison chart.
+    Called inside the Technical Analysis tab.
+    """
+    from portfolio import BENCHMARKS, TIMEFRAMES
+    import plotly.graph_objects as go
+    from plotly.subplots import make_subplots
+
+    native_ccy = info.get("currency","USD")
+    name       = info.get("shortName") or ticker
+
+    st.markdown(section_header("📊 Price vs Benchmark"), unsafe_allow_html=True)
+    st.caption("Both lines rebased to 100 at the start of the selected period.")
+
+    col1, col2, col3 = st.columns([2.5, 2, 0.8])
+    with col1:
+        bench_name = st.selectbox(
+            "Benchmark", list(BENCHMARKS.keys()), index=0,
+            key=f"stock_bench_{ticker}")
+        bench_ticker = BENCHMARKS[bench_name]
+    with col2:
+        tf_options = list(TIMEFRAMES.keys())
+        tf = st.selectbox(
+            "Timeframe", tf_options,
+            index=tf_options.index("1Y") if "1Y" in tf_options else 4,
+            key=f"stock_tf_{ticker}")
+        days = TIMEFRAMES[tf]
+    with col3:
+        show_vol = st.checkbox("Volume", value=False, key=f"vol_{ticker}")
+
+    # Determine yfinance period string
+    period_map = {7:"5d",30:"1mo",90:"3mo",180:"6mo",
+                  365:"1y",730:"2y",1095:"3y",None:"ytd"}
+    period = period_map.get(days, "1y")
+
+    import yfinance as yf
+
+    @st.cache_data(ttl=3600, show_spinner=False)
+    def _fetch(sym, per):
+        try:
+            h = yf.Ticker(sym).history(period=per)
+            return h["Close"].dropna() if h is not None and not h.empty else pd.Series()
+        except Exception:
+            return pd.Series()
+
+    stock_hist = _fetch(ticker, period)
+    bench_hist = _fetch(bench_ticker, period)
+
+    # YTD filter
+    if days is None:
+        ytd = pd.Timestamp(pd.Timestamp.now().year, 1, 1)
+        def _tz_filter(s, t):
+            if s.empty: return s
+            t2 = t.tz_localize(s.index.tz) if s.index.tz else t.tz_localize(None)
+            return s[s.index >= t2]
+        stock_hist = _tz_filter(stock_hist, ytd)
+        bench_hist = _tz_filter(bench_hist, ytd)
+    elif days:
+        now = pd.Timestamp.now()
+        cutoff = now - pd.Timedelta(days=days)
+        def _day_filter(s):
+            if s.empty: return s
+            c2 = cutoff.tz_localize(s.index.tz) if s.index.tz else cutoff.tz_localize(None)
+            return s[s.index >= c2]
+        stock_hist = _day_filter(stock_hist)
+        bench_hist = _day_filter(bench_hist)
+
+    if stock_hist.empty:
+        st.warning("No price history available for this ticker.")
+        return
+
+    # Rebase to 100
+    s_rebased = stock_hist / stock_hist.iloc[0] * 100
+    b_rebased = bench_hist / bench_hist.iloc[0] * 100 if not bench_hist.empty else pd.Series()
+
+    rows = 2 if show_vol else 1
+    fig  = make_subplots(rows=rows, cols=1, shared_xaxes=True,
+                         vertical_spacing=0.06,
+                         row_heights=[0.75,0.25] if show_vol else [1.0])
+
+    s_ret  = (s_rebased.iloc[-1]/100 - 1)*100 if len(s_rebased)>1 else 0
+    s_col  = "#00C853" if s_ret >= 0 else "#EF5350"
+    fig.add_trace(go.Scatter(
+        x=s_rebased.index, y=s_rebased.values,
+        name=f"{ticker}  ({s_ret:+.1f}%)",
+        line=dict(color=s_col, width=2.5), mode="lines",
+        hovertemplate="%{y:.1f}<extra>" + ticker + "</extra>",
+    ), row=1, col=1)
+
+    if not b_rebased.empty:
+        b_ret  = (b_rebased.iloc[-1]/100 - 1)*100 if len(b_rebased)>1 else 0
+        b_col  = "#42A5F5"
+        fig.add_trace(go.Scatter(
+            x=b_rebased.index, y=b_rebased.values,
+            name=f"{bench_name}  ({b_ret:+.1f}%)",
+            line=dict(color=b_col, width=2, dash="dot"), mode="lines",
+            hovertemplate="%{y:.1f}<extra>" + bench_name + "</extra>",
+        ), row=1, col=1)
+
+    fig.add_hline(y=100, line=dict(color="rgba(255,255,255,0.2)", dash="dot"),
+                  row=1, col=1)
+
+    if show_vol and not hist.empty and "Volume" in hist.columns:
+        vols  = hist["Volume"].tail(len(s_rebased))
+        vcols = ["#00C853" if c >= o else "#EF5350"
+                 for c, o in zip(hist["Close"].tail(len(s_rebased)),
+                                 hist["Open"].tail(len(s_rebased)))]
+        fig.add_trace(go.Bar(
+            x=hist.index[-len(s_rebased):], y=vols.values,
+            name="Volume", marker_color=vcols, showlegend=False,
+            hovertemplate="%{y:,.0f}<extra>Volume</extra>",
+        ), row=2, col=1)
+
+    fig.update_layout(
+        height=400 if not show_vol else 520,
+        template="plotly_dark",
+        paper_bgcolor="#0e1117", plot_bgcolor="#1a1d2e",
+        margin=dict(l=50, r=30, t=30, b=40),
+        legend=dict(orientation="h", x=0, y=1.05,
+                    font=dict(size=11), bgcolor="rgba(0,0,0,0)"),
+        hovermode="x unified",
+        xaxis=dict(showgrid=False, tickfont=dict(size=10),
+                   tickformat="%d %b '%y",
+                   rangeslider=dict(visible=True, thickness=0.04)),
+        yaxis=dict(showgrid=True, gridcolor="rgba(255,255,255,0.06)",
+                   tickfont=dict(size=10), title="Rebased to 100"),
+        hoverlabel=dict(bgcolor="#1a1d2e", font_size=12),
+    )
+    if show_vol:
+        fig.update_yaxes(tickfont=dict(size=9), row=2, col=1)
+
+    st.plotly_chart(fig, use_container_width=True)
 
 def build_financials_chart(fund, ticker):
     rev = fund.get("revenue_series", {}); ni = fund.get("net_income_series", {})
@@ -1010,68 +1147,170 @@ def render_intelligence_tab(ticker, info, scoring, signals, sentiment, fund, com
 # ─── News Tab ────────────────────────────────────────────────────────────────
 
 def render_news_tab(ticker, info, news_items):
-    """Recent news + links to free news sources."""
-    import urllib.parse
+    """Recent news + earnings summary + source links."""
+    import urllib.parse, datetime
     company_name = info.get("shortName", ticker)
+    sector       = info.get("sector","")
+    tick_enc     = urllib.parse.quote(ticker)
+
+    # ── Earnings summary from available data ──────────────────────────────────
+    st.markdown(section_header("📊 Recent Earnings Summary"), unsafe_allow_html=True)
+
+    eps_ttm   = info.get("trailingEps")
+    eps_fwd   = info.get("forwardEps")
+    rev       = info.get("totalRevenue")
+    rev_g     = info.get("revenueGrowth")
+    eps_g     = info.get("earningsGrowth")
+    net_m     = info.get("profitMargins")
+    gross_m   = info.get("grossMargins")
+    op_m      = info.get("operatingMargins")
+    ebitda    = info.get("ebitda")
+    fcf       = info.get("freeCashflow")
+    rec_mean  = info.get("recommendationMean")
+    n_ana     = info.get("numberOfAnalystOpinions",0)
+    tgt_mean  = info.get("targetMeanPrice")
+    cp        = info.get("currentPrice") or info.get("regularMarketPrice") or 0
+
+    e1,e2,e3,e4 = st.columns(4)
+    if eps_ttm is not None:
+        e1.metric("EPS (TTM)",  f"${eps_ttm:.2f}" if eps_ttm else "N/A",
+                  f"Fwd: ${eps_fwd:.2f}" if eps_fwd else "")
+    if rev:
+        rev_lbl = f"${rev/1e9:.1f}B" if rev >= 1e9 else f"${rev/1e6:.0f}M"
+        e2.metric("Revenue (TTM)", rev_lbl,
+                  f"{rev_g:+.1%} YoY" if rev_g else "")
+    if net_m is not None:
+        m_delta = f"GM: {gross_m:.1%}" if gross_m else ""
+        e3.metric("Net Margin", f"{net_m:.1%}", m_delta)
+    if fcf:
+        fcf_lbl = f"${fcf/1e9:.1f}B" if abs(fcf)>=1e9 else f"${fcf/1e6:.0f}M"
+        e4.metric("Free Cash Flow", fcf_lbl)
+
+    # Analyst consensus
+    if tgt_mean and cp:
+        upside = (tgt_mean - cp) / cp
+        c_up   = "#00C853" if upside > 0.05 else ("#EF5350" if upside < -0.05 else "#FFC107")
+        rec_labels = {1:"Strong Buy",2:"Buy",3:"Hold",4:"Sell",5:"Strong Sell"}
+        rec_lbl    = rec_labels.get(round(rec_mean), "Hold") if rec_mean else "N/A"
+        st.markdown(
+            f"<div style='background:#1a1d2e;border:1px solid #3a3f5c;border-radius:10px;"
+            f"padding:12px 16px;margin:8px 0;display:flex;gap:24px;flex-wrap:wrap'>"
+            f"<div><div style='font-size:11px;color:#718096'>Analyst Consensus</div>"
+            f"<div style='font-size:16px;font-weight:700;color:#e2e8f0'>{rec_lbl}</div></div>"
+            f"<div><div style='font-size:11px;color:#718096'>Price Target (mean)</div>"
+            f"<div style='font-size:16px;font-weight:700;color:#e2e8f0'>${tgt_mean:.2f}</div></div>"
+            f"<div><div style='font-size:11px;color:#718096'>Implied upside</div>"
+            f"<div style='font-size:16px;font-weight:700;color:{c_up}'>{upside:+.1%}</div></div>"
+            f"<div><div style='font-size:11px;color:#718096'>Analysts covering</div>"
+            f"<div style='font-size:16px;font-weight:700;color:#e2e8f0'>{n_ana}</div></div>"
+            f"</div>", unsafe_allow_html=True)
+
+    # Earnings quality assessment
+    if eps_ttm is not None or net_m is not None:
+        with st.expander("📋 Earnings Quality Assessment"):
+            items = []
+            if eps_ttm and eps_ttm > 0:
+                items.append(("✅","Profitable","Company generating positive EPS"))
+            elif eps_ttm and eps_ttm < 0:
+                items.append(("⚠️","Loss-making",f"EPS: ${eps_ttm:.2f} — monitor path to profitability"))
+            if fcf and fcf > 0:
+                items.append(("✅","Positive FCF","Cash generation supports operations"))
+            elif fcf and fcf < 0:
+                items.append(("⚠️","Negative FCF","Company burning cash — check runway"))
+            if gross_m and gross_m > 0.40:
+                items.append(("✅","Strong gross margins",f"{gross_m:.1%} — pricing power evident"))
+            elif gross_m and gross_m < 0.15:
+                items.append(("⚠️","Thin margins",f"{gross_m:.1%} — vulnerable to cost inflation"))
+            if rev_g and rev_g > 0.15:
+                items.append(("🚀","High revenue growth",f"{rev_g:+.1%} YoY"))
+            elif rev_g and rev_g < 0:
+                items.append(("🔴","Revenue declining",f"{rev_g:+.1%} YoY"))
+            for icon, lbl, desc in items:
+                st.markdown(
+                    f"<div style='padding:5px 0;font-size:12px'>"
+                    f"<span>{icon} <b>{lbl}</b></span> — "
+                    f"<span style='color:#94a3b8'>{desc}</span></div>",
+                    unsafe_allow_html=True)
+            if not items:
+                st.info("Insufficient earnings data for quality assessment.")
+
+    st.divider()
 
     # ── Free news source links ────────────────────────────────────────────────
-    st.markdown(section_header("🔗 Free News Sources"), unsafe_allow_html=True)
+    st.markdown(section_header("🔗 News Sources"), unsafe_allow_html=True)
     links = build_news_search_links(ticker, company_name)
-    cols = st.columns(3)
+    cols  = st.columns(4)
     for i, link in enumerate(links):
-        with cols[i % 3]:
+        with cols[i % 4]:
             st.markdown(
                 f"""<a href="{link['url']}" target="_blank"
                    style="display:block;background:#1a1d2e;border:1px solid #3a3f5c;
-                   border-radius:8px;padding:10px 14px;text-decoration:none;
-                   color:#90cdf4;font-size:13px;margin-bottom:8px;text-align:center">
+                   border-radius:8px;padding:8px 10px;text-decoration:none;
+                   color:#90cdf4;font-size:12px;margin-bottom:6px;text-align:center">
                    {link['icon']} {link['source']}</a>""",
-                unsafe_allow_html=True
-            )
+                unsafe_allow_html=True)
 
-    st.markdown("<br>", unsafe_allow_html=True)
+    st.divider()
 
-    # ── Yahoo Finance news feed ───────────────────────────────────────────────
-    st.markdown(section_header("📰 Recent News"), unsafe_allow_html=True)
+    # ── Recent news feed ──────────────────────────────────────────────────────
+    st.markdown(section_header("📰 Latest News"), unsafe_allow_html=True)
 
     if news_items:
-        import datetime
-        for item in news_items:
-            title     = item.get("title", "")
-            link      = item.get("link", "")
-            publisher = item.get("publisher", "")
+        # Sort by date (most recent first)
+        def _ts(item):
+            return item.get("providerPublishTime", 0) or 0
+        sorted_news = sorted(news_items, key=_ts, reverse=True)
+
+        now = datetime.datetime.now()
+        for item in sorted_news[:15]:
+            title     = item.get("title","")
+            link      = item.get("link","")
+            publisher = item.get("publisher","")
             ts        = item.get("providerPublishTime", 0)
             if not title or not link:
                 continue
-            date_str = ""
+
+            date_str  = ""
+            age_badge = ""
             if ts:
                 try:
-                    date_str = datetime.datetime.fromtimestamp(ts).strftime("%b %d, %Y")
+                    dt       = datetime.datetime.fromtimestamp(ts)
+                    days_ago = (now - dt).days
+                    date_str = dt.strftime("%b %d, %Y")
+                    if days_ago == 0:
+                        age_badge = "<span style='background:#00C853;color:#000;font-size:10px;padding:1px 5px;border-radius:4px;margin-left:6px'>Today</span>"
+                    elif days_ago <= 3:
+                        age_badge = f"<span style='background:#FFC107;color:#000;font-size:10px;padding:1px 5px;border-radius:4px;margin-left:6px'>{days_ago}d ago</span>"
                 except Exception:
                     pass
+
+            # Highlight earnings-related articles
+            t_lower   = title.lower()
+            is_earn   = any(w in t_lower for w in ["earnings","revenue","eps","profit","loss","quarterly","results","guidance"])
+            border_c  = "#FFC107" if is_earn else "#2d3748"
             st.markdown(
-                f"""<div style='background:#1a1d2e;border:1px solid #2d3748;border-radius:8px;
-                    padding:12px 16px;margin-bottom:8px'>
+                f"""<div style='background:#1a1d2e;border:1px solid {border_c};
+                    border-radius:8px;padding:12px 16px;margin-bottom:6px'>
                   <a href="{link}" target="_blank"
                      style="color:#90cdf4;font-size:13px;font-weight:600;text-decoration:none">
                     {title}
-                  </a>
-                  <div style="font-size:11px;color:#718096;margin-top:5px">
+                  </a>{age_badge}
+                  <div style="font-size:11px;color:#718096;margin-top:4px">
                     {publisher}{"  ·  " + date_str if date_str else ""}
+                    {"  ·  📊 <i>Earnings related</i>" if is_earn else ""}
                   </div>
                 </div>""",
-                unsafe_allow_html=True
-            )
+                unsafe_allow_html=True)
     else:
-        st.info("No recent news found. Use the source links above to search manually.")
+        st.info("No recent news found via Yahoo Finance. Use the source links above.")
 
-    # ── Earnings calendar link ────────────────────────────────────────────────
-    st.markdown(section_header("📅 Earnings Calendar Links"), unsafe_allow_html=True)
-    tick_enc = urllib.parse.quote(ticker)
+    # ── Earnings calendar links ───────────────────────────────────────────────
+    st.markdown(section_header("📅 Earnings Calendar"), unsafe_allow_html=True)
     st.markdown(
         f"[📅 Earnings Whispers](https://www.earningswhispers.com/stocks/{ticker.lower()})  ·  "
         f"[📊 Seeking Alpha Earnings](https://seekingalpha.com/symbol/{tick_enc}/earnings)  ·  "
-        f"[🗓️ Yahoo Finance Calendar](https://finance.yahoo.com/quote/{tick_enc}/financials/)"
+        f"[🗓️ Yahoo Finance Financials](https://finance.yahoo.com/quote/{tick_enc}/financials/)  ·  "
+        f"[📈 MarketBeat Earnings](https://www.marketbeat.com/stocks/{info.get('exchange','NASDAQ')}/{ticker}/earnings/)"
     )
 
 
@@ -1550,10 +1789,44 @@ def render_deep_analysis_tab(ticker, info, deep, fund, data):
         st.info(f"No sector macro profile available for '{sector}'. "
                 "The deep analysis above (Piotroski, Altman, DuPont) is still valid.")
 
+    st.divider()
+
+    # ── Government & External Factors ────────────────────────────────────────
+    st.markdown("### 🏛️ Government, Regulation & External Factors")
+    gov = get_government_factors(info)
+    risk_level = gov.get("regulatory_risk","moderate")
+    risk_color = RISK_COLORS.get(risk_level,"#FFC107")
+    gov_factors = gov.get("factors",[])
+
+    st.markdown(
+        f"<div style='background:{risk_color}22;border:1px solid {risk_color}44;"
+        f"border-radius:10px;padding:10px 16px;margin-bottom:12px;display:flex;gap:16px'>"
+        f"<div><div style='font-size:11px;color:#718096'>Sector Regulatory Risk</div>"
+        f"<div style='font-size:18px;font-weight:800;color:{risk_color}'>"
+        f"{risk_level.replace('_',' ').title()}</div></div>"
+        f"<div style='font-size:12px;color:#a0aec0;align-self:center'>"
+        f"Regulatory exposure for the {gov.get('sector','')} sector based on "
+        f"current legislative and enforcement environment.</div>"
+        f"</div>", unsafe_allow_html=True)
+
+    if gov_factors:
+        for factor_name, factor_desc in gov_factors:
+            st.markdown(
+                f"<div style='padding:10px 14px;border-left:3px solid {risk_color};"
+                f"margin:5px 0;background:#0e1117;border-radius:0 8px 8px 0'>"
+                f"<div style='font-size:13px;font-weight:700;color:#e2e8f0'>{factor_name}</div>"
+                f"<div style='font-size:12px;color:#94a3b8;margin-top:4px;line-height:1.5'>"
+                f"{factor_desc}</div>"
+                f"</div>", unsafe_allow_html=True)
+    else:
+        st.info(f"No specific regulatory profile for the '{gov.get('sector','')}' sector. "
+                "General regulatory environment applies.")
+
     st.markdown("""
 > **Data sources:** Financial ratios from yfinance (Yahoo Finance).
 > Macro sensitivity profiles compiled from Bloomberg sector factor research,
 > Damodaran industry analysis, and Fed/OECD sector studies.
+> Regulatory factors based on current legislative environment (2024-2025).
 > Piotroski F-Score: Piotroski (2000) — *Journal of Accounting Research*.
 > Altman Z-Score: Altman (1968, 1983) — *Journal of Finance*.
     """)
@@ -2030,6 +2303,8 @@ Each model answers a **different question**:
     # ── Technical Analysis ────────────────────────────────────────────────────
     with tabs[4]:
         hist = data.get("hist_2y", pd.DataFrame())
+        build_stock_benchmark_chart(ticker, hist, info)
+        st.divider()
         if hist.empty or not indicators:
             st.warning("Insufficient price history for technical analysis.")
         else:

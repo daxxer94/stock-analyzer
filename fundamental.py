@@ -675,22 +675,25 @@ def _get_target_margin(info: dict) -> tuple[float, str]:
 def dcf_path_to_profitability(data: dict, info: dict, rfr: float,
                                shares: float, net_cash: float) -> dict:
     """
-    Path-to-Profitability DCF — designed for currently unprofitable companies.
+    Path-to-Profitability DCF — for currently unprofitable or near-zero-FCF companies.
 
-    Methodology:
-      1. Start from current revenue (not FCF which is negative)
-      2. Project revenue growth using analyst estimates + industry benchmarks
-      3. Model margin improvement trajectory toward sector-normal operating margins
-         (companies typically reach break-even ~3-5 years, mature margins ~7-10 years)
-      4. Estimate FCF from projected EBITDA margins and CapEx ratios
-      5. Discount projected FCFs back at CAPM cost of equity
-      6. Add terminal value once the company reaches positive sustainable FCF
+    Methodology (consistent with JPMorgan equity research practice):
+      1. Start from current revenue (not FCF, which is negative/unreliable)
+      2. Project revenue growth: blend analyst estimates (60%) + industry benchmarks (40%)
+      3. Model operating margin improvement:
+         - Current margin → target (sector benchmark) over a realistic timeline
+         - More deeply unprofitable companies get longer timelines (7-10Y)
+         - Near-breakeven companies get shorter timelines (3-5Y)
+      4. Derive UFCF: Revenue × Op.Margin × (1-t) − CapEx − ΔNWC
+      5. Discount at CAPM + size premium (loss-making companies carry higher risk)
+      6. Terminal value only applied once FCF is sustainably positive
+      7. Scenario analysis: base / bull / bear cases on margin trajectory
 
-    Macro/micro factors considered:
-      - Interest rate environment (higher rates → higher discount rate)
-      - Beta (company-specific systematic risk)
-      - Industry margin benchmarks (realistic ceiling)
-      - Analyst revenue estimates (forward-looking, not just historical)
+    Key loss-making adjustments:
+      - Tax rate = 0% until EBIT positive (no tax benefit assumed on losses)
+      - Negative FCF years contribute negative PV (cash burn)
+      - Higher discount rate reflects uncertainty premium for pre-profit companies
+      - NOL carryforward approximated (reduces tax for first profitable years)
     """
     income   = data.get("income_stmt",   pd.DataFrame())
     balance  = data.get("balance_sheet", pd.DataFrame())
@@ -757,28 +760,50 @@ def dcf_path_to_profitability(data: dict, info: dict, rfr: float,
     terminal_g = 0.025
 
     # ── 10-year explicit forecast ─────────────────────────────────────────────
-    cashflows   = []
     rev         = current_rev
-    stage2_g    = max(0.04, stage1_rev_g * 0.50)  # fade in years 6-10
+    stage2_g    = max(0.03, stage1_rev_g * 0.50)   # growth fades in years 6-10
 
-    pv_total    = 0.0
-    cf_details  = []
+    pv_total          = 0.0
+    cf_details        = []
     first_positive_yr = None
 
+    # Approximate NOL carryforward: cumulative losses reduce first profitable years' tax
+    cumulative_loss   = 0.0
+    nol_remaining     = abs(current_rev * max(0, -current_om) * 2)  # 2-year loss proxy
+
     for yr in range(1, 11):
-        # Revenue growth: stage 1 (yrs 1-5) → stage 2 (yrs 6-10)
-        g = stage1_rev_g if yr <= 5 else stage2_g
+        g   = stage1_rev_g if yr <= 5 else stage2_g
         rev = rev * (1 + g)
 
-        # Margin: linear ramp toward target_margin
-        progress    = min(1.0, yr / years_to_target)
-        op_margin   = current_om + progress * margin_gap
-        # Net margin ≈ operating margin × (1 - tax_rate) once profitable
-        tax_rate    = 0.21 if op_margin > 0 else 0.0
-        est_fcf     = rev * op_margin * (1 - tax_rate) - rev * capex_ratio
+        # Margin ramp: S-curve approximation (slow start, accelerates mid-period)
+        raw_progress = yr / years_to_target
+        # S-curve: slow initial improvement, faster in middle, plateaus near target
+        progress     = min(1.0, raw_progress ** 0.75)
+        op_margin    = current_om + progress * margin_gap
 
-        pv          = est_fcf / (1 + r) ** yr
-        pv_total   += pv
+        # Tax treatment for loss-making companies
+        if op_margin <= 0:
+            tax_rate     = 0.0        # no tax on losses
+            cumulative_loss += rev * abs(op_margin)
+        else:
+            nopat_gross  = rev * op_margin
+            # Use NOL carryforward to shelter early profits
+            if nol_remaining > 0:
+                nol_used     = min(nol_remaining, nopat_gross * 0.80)
+                nol_remaining -= nol_used
+                taxable       = nopat_gross - nol_used
+                tax_rate      = 0.21 * (taxable / nopat_gross) if nopat_gross > 0 else 0
+            else:
+                tax_rate      = 0.21
+
+        # UFCF = NOPAT + D&A_approx − CapEx − ΔNWC_approx
+        nopat     = rev * op_margin * (1 - tax_rate)
+        da_approx = rev * 0.04          # ~4% of revenue (typical D&A for asset-light models)
+        nwc_delta = rev * g * 0.05      # working capital builds as revenue grows
+        est_fcf   = nopat + da_approx - rev * capex_ratio - nwc_delta
+
+        pv        = est_fcf / (1 + r) ** yr
+        pv_total += pv
 
         if est_fcf > 0 and first_positive_yr is None:
             first_positive_yr = yr
@@ -788,6 +813,7 @@ def dcf_path_to_profitability(data: dict, info: dict, rfr: float,
             "revenue":    rev,
             "rev_growth": g,
             "op_margin":  op_margin,
+            "tax_rate":   tax_rate,
             "fcf":        est_fcf,
             "pv":         pv,
         })
