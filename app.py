@@ -34,7 +34,12 @@ from screener_ui         import render_screener_page
 from portfolio_ui        import render_portfolio_page
 from cca                 import run_cca, format_cca_peer_table
 from financial_analysis  import (run_deep_analysis, DRIVER_COLORS, SENSITIVITY_COLORS,
-                               SECTOR_MACRO_SENSITIVITY, get_government_factors, RISK_COLORS)
+                               SECTOR_MACRO_SENSITIVITY)
+try:
+    from financial_analysis import get_government_factors, RISK_COLORS
+except ImportError:
+    def get_government_factors(info): return {}
+    RISK_COLORS = {"very high":"#EF5350","high":"#FF9800","moderate":"#FFC107","low":"#66BB6A"}
 
 # ─── Page config ─────────────────────────────────────────────────────────────
 try:
