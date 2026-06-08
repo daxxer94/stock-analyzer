@@ -605,30 +605,38 @@ def fetch_benchmark_comparison(enriched: pd.DataFrame,
     if port_hist.empty:
         return {"error": "No portfolio history available"}
 
+    # Strip timezones from all series for consistent comparison
+    def _strip_tz(s):
+        if s.empty: return s
+        s = s.copy()
+        if s.index.tz is not None:
+            s.index = s.index.tz_localize(None)
+        return s
+
+    port_hist  = _strip_tz(port_hist)
+    bench_hist = _strip_tz(bench_hist)
+
     # Apply date filter
+    now = pd.Timestamp.now()
     if days is not None:
-        cutoff = pd.Timestamp.now(tz=port_hist.index.tz) - pd.Timedelta(days=days)
-        port_hist  = port_hist[port_hist.index >= cutoff]
-        if not bench_hist.empty:
-            bench_hist = bench_hist[bench_hist.index >= cutoff]
+        cutoff = now - pd.Timedelta(days=days)
     else:
-        # YTD
-        ytd_start = pd.Timestamp(pd.Timestamp.now().year, 1, 1)
-        if port_hist.index.tz:
-            ytd_start = ytd_start.tz_localize(port_hist.index.tz)
-        port_hist  = port_hist[port_hist.index >= ytd_start]
-        if not bench_hist.empty:
-            if bench_hist.index.tz:
-                ytd_start2 = ytd_start.tz_localize(bench_hist.index.tz)
-            else:
-                ytd_start2 = ytd_start.tz_localize(None)
-            bench_hist = bench_hist[bench_hist.index >= ytd_start2]
+        cutoff = pd.Timestamp(now.year, 1, 1)   # YTD
+
+    port_hist  = port_hist[port_hist.index   >= cutoff]
+    bench_hist = bench_hist[bench_hist.index >= cutoff] if not bench_hist.empty else bench_hist
 
     if port_hist.empty:
         return {"error": "No data for selected timeframe"}
 
-    # Rebase to 100
-    port_rebased  = port_hist  / port_hist.iloc[0]  * 100
+    # Align to common start date so rebase is fair
+    if not bench_hist.empty and len(bench_hist) > 0:
+        common_start = max(port_hist.index[0], bench_hist.index[0])
+        port_hist    = port_hist[port_hist.index   >= common_start]
+        bench_hist   = bench_hist[bench_hist.index >= common_start]
+
+    # Rebase to 100 at common start
+    port_rebased  = port_hist  / port_hist.iloc[0]  * 100 if not port_hist.empty  else pd.Series()
     bench_rebased = bench_hist / bench_hist.iloc[0] * 100 if not bench_hist.empty else pd.Series()
 
     return {
