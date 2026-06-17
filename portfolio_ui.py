@@ -1,3 +1,4 @@
+from tooltips import ticker_tooltip
 """
 portfolio_ui.py — Portfolio Analysis page UI.
 
@@ -135,7 +136,7 @@ def render_summary(metrics: dict, enriched: pd.DataFrame):
 # ─── Allocation Charts ────────────────────────────────────────────────────────
 
 def render_allocation_charts(metrics: dict, enriched: pd.DataFrame):
-    st.markdown("### 🥧 Portfolio Allocation")
+    st.markdown("### Portfolio Allocation")
 
     tab1, tab2, tab3, tab4 = st.tabs(["By Asset Type","By Sector","By Geography","By Currency"])
 
@@ -193,7 +194,7 @@ def _donut_chart(data: dict, title: str, colors):
 # ─── Position Table ───────────────────────────────────────────────────────────
 
 def render_positions_table(enriched: pd.DataFrame):
-    st.markdown("### 📋 Positions")
+    st.markdown("### Positions")
     st.caption("Click **▶ Analyze** to open a full analysis for any holding.")
 
     if enriched.empty:
@@ -232,7 +233,7 @@ def render_positions_table(enriched: pd.DataFrame):
             unsafe_allow_html=True)
 
         c2.markdown(
-            f"<div style='font-size:13px;font-weight:700;color:#e2e8f0'>{sym}</div>"
+            f"<div style='font-size:13px;font-weight:700;color:#e2e8f0'>{ticker_tooltip(sym, str(pos.get('name','')), 'font-size:13px;font-weight:700;color:#e2e8f0')}</div>"
             f"<div style='font-size:10px;color:#718096'>{str(pos.get('name',''))[:22]}</div>",
             unsafe_allow_html=True)
 
@@ -269,7 +270,7 @@ def render_etf_details(enriched: pd.DataFrame):
     if etfs.empty:
         return
 
-    st.markdown("### 🧺 ETF Details")
+    st.markdown("### ETF Details")
     st.caption("Fund-specific information for ETF positions")
 
     for _, etf in etfs.iterrows():
@@ -342,7 +343,7 @@ def render_performance_chart(enriched: pd.DataFrame):
 # ─── Risk Summary ─────────────────────────────────────────────────────────────
 
 def render_risk_section(metrics: dict, enriched: pd.DataFrame):
-    st.markdown("### ⚡ Risk Overview")
+    st.markdown("### Risk Overview")
     m = metrics
 
     c1, c2, c3 = st.columns(3)
@@ -419,7 +420,7 @@ def render_risk_section(metrics: dict, enriched: pd.DataFrame):
 
 def render_advanced_metrics(enriched: pd.DataFrame):
     """Render Sharpe, Alpha, Beta, Max Drawdown, Sortino, Calmar."""
-    st.markdown("### 📐 Advanced Risk & Performance Metrics")
+    st.markdown("### Advanced Risk & Performance Metrics")
 
     with st.spinner("Calculating risk metrics from price history (1Y)…"):
         adv = calc_advanced_metrics(enriched)
@@ -521,7 +522,7 @@ def render_advanced_metrics(enriched: pd.DataFrame):
 
 def render_benchmark_chart(enriched: pd.DataFrame):
     """Dynamic portfolio vs benchmark comparison chart."""
-    st.markdown("### 📊 Portfolio vs Benchmark")
+    st.markdown("### Portfolio vs Benchmark")
 
     # Controls row
     ctrl1, ctrl2, ctrl3 = st.columns([2, 2, 1])

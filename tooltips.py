@@ -7,6 +7,55 @@ Definitions align with Investopedia and Yahoo Finance standards.
 
 TOOLTIP_CSS = """
 <style>
+/* ── Ticker name tooltip ──────────────────────────────────────────────────── */
+.tk-wrap {
+  position: relative;
+  display: inline-block;
+  cursor: help;
+  border-bottom: 1px dotted rgba(148,163,184,0.4);
+}
+.tk-wrap .tk-tip {
+  visibility: hidden;
+  opacity: 0;
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  background: #1e2433;
+  color: #e2e8f0;
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+  padding: 4px 10px;
+  border-radius: 6px;
+  border: 1px solid #2d3748;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+  pointer-events: none;
+  z-index: 9999;
+  transition: opacity 0.15s ease;
+  font-family: 'Inter', sans-serif;
+}
+.tk-wrap .tk-tip::after {
+  content: '';
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  border: 4px solid transparent;
+  border-top-color: #2d3748;
+}
+.tk-wrap:hover .tk-tip {
+  visibility: visible;
+  opacity: 1;
+}
+/* Light theme */
+@media (prefers-color-scheme: light) {
+  .tk-wrap .tk-tip {
+    background: #1e2433;
+    color: #f1f5f9;
+  }
+}
+
 .tt-wrap {
   position: relative;
   display: inline-flex;
@@ -849,3 +898,38 @@ def tooltip_html(metric_key: str, label: str, value: str,
 def section_header(title: str) -> str:
     return (f"<div class='section-header' style='font-size:16px;font-weight:700;"
             f"margin:14px 0 6px;color:#e2e8f0'>{title}</div>")
+
+
+def _lookup_ticker_name(sym: str) -> str:
+    """Best-effort full-name lookup from the search module's TICKER_NAMES dict."""
+    try:
+        from search import TICKER_NAMES
+        return TICKER_NAMES.get(sym.upper(), "")
+    except Exception:
+        return ""
+
+
+def ticker_tooltip(sym: str, name: str = "", style: str = "") -> str:
+    """
+    Wrap a ticker symbol in a hover tooltip showing the full company name.
+    If no name is passed, falls back to a TICKER_NAMES lookup so the tooltip
+    works everywhere — even when the caller doesn't have the name handy.
+
+    Uses BOTH a CSS tooltip (styled) and a native title attribute (always works,
+    even when CSS is clipped by a parent's overflow:hidden, e.g. inside columns).
+    """
+    if not name or name == sym:
+        name = _lookup_ticker_name(sym)
+
+    safe_name = (name or "").replace('"', "&quot;").replace("'", "&#39;")
+    title_attr = f' title="{safe_name}"' if safe_name else ""
+
+    if not safe_name:
+        return f"<span style='{style}'{title_attr}>{sym}</span>"
+
+    return (
+        f"<span class='tk-wrap'{title_attr}>"
+        f"<span style='{style}'>{sym}</span>"
+        f"<span class='tk-tip'>{safe_name}</span>"
+        f"</span>"
+    )

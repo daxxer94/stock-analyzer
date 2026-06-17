@@ -23,6 +23,11 @@ from technical           import calculate_indicators, generate_signals
 from valuation_sentiment import get_valuation_ratios, compare_with_peers, analyze_sentiment
 from scoring             import score_fundamental, score_valuation, score_sentiment, calculate_composite
 from tooltips            import TOOLTIP_CSS, tooltip_html, section_header, METRICS
+try:
+    from tooltips import ticker_tooltip
+except ImportError:
+    def ticker_tooltip(sym, name="", style=""):
+        return f"<span style='{style}' title='{name}'>{sym}</span>" 
 from search              import search_ticker, get_ticker_display_name, TICKER_NAMES
 from currency            import (fetch_fx_rates, fmt_currency, get_ticker_currency,
                                   apply_currency_to_info, sidebar_currency_selector,
@@ -40,6 +45,14 @@ try:
 except ImportError:
     def get_government_factors(info): return {}
     RISK_COLORS = {"very high":"#EF5350","high":"#FF9800","moderate":"#FFC107","low":"#66BB6A"}
+try:
+    from financial_analysis import get_ai_supply_chain_context
+except ImportError:
+    def get_ai_supply_chain_context(info): return {}
+from etf_data import fetch_etf_data, detect_quote_type, get_etf_summary_metrics
+from landing  import (render_ticker_tape, render_indices,
+                      fetch_index_data, fetch_tape_quotes,
+                      render_grouped_news, render_market_movers)
 
 # ─── Page config ─────────────────────────────────────────────────────────────
 try:
@@ -90,22 +103,627 @@ _components.html("""
 # ─── Inject CSS ──────────────────────────────────────────────────────────────
 st.markdown(TOOLTIP_CSS + """
 <style>
-.metric-card{background:#1a1d2e;border-radius:10px;padding:16px 20px;margin:4px 0;border:1px solid #2d3748;}
-.signal-badge{display:inline-block;padding:5px 15px;border-radius:20px;font-weight:700;font-size:13px;}
-.score-bar-bg{background:#2a2d3e;border-radius:6px;height:10px;margin:2px 0 6px 0;}
-.score-bar-fill{border-radius:6px;height:10px;}
-.section-header{font-size:16px;font-weight:700;margin:14px 0 6px;color:#e2e8f0;}
-.earn-card{background:#1a1d2e;border:1px solid #2d3748;border-radius:8px;padding:10px 14px;margin:5px 0;font-size:13px;}
-.deploy-box{background:#1a1d2e;border:1px solid #3a3f5c;border-radius:10px;padding:16px;margin:8px 0;}
-@media(max-width:768px){
-  .mrow{font-size:11px;}
-  .tt-box{width:240px!important;}
-  .signal-badge{font-size:11px;padding:3px 10px;}
+/* ═══════════════════════════════════════════════════════════════════════════
+   Stock Analyzer — Design System
+   Inspired by cleanmeter.app & giga.ai: monochromatic, minimal, data-first
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* ── 1. Fonts — Inter (numbers/headers) + DM Sans (body) ───────────────── */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=DM+Sans:wght@400;500;600&display=swap');
+
+/* Scope font-family ONLY to text-content elements — NOT SVG, NOT icon wrappers */
+body, .stMarkdown, .stText, p, label,
+input, select, textarea,
+[data-testid="stMarkdownContainer"],
+[data-testid="stTextInput"] input,
+[data-testid="stSelectbox"],
+.streamlit-expanderHeader {
+  font-family: 'DM Sans', -apple-system, BlinkMacSystemFont, sans-serif !important;
+}
+
+/* Headers and numbers get Inter */
+h1, h2, h3, h4, h5, h6,
+[data-testid="stMetricValue"],
+[data-testid="stMetricLabel"],
+.stButton button,
+.stTabs [data-baseweb="tab"],
+[data-baseweb="tag"] {
+  font-family: 'Inter', -apple-system, sans-serif !important;
+}
+
+h1 { font-size: 28px !important; font-weight: 800 !important; letter-spacing: -0.03em; color: #f1f5f9 !important; }
+h2 { font-size: 22px !important; font-weight: 700 !important; letter-spacing: -0.02em; color: #e2e8f0 !important; }
+h3 { font-size: 17px !important; font-weight: 700 !important; letter-spacing: -0.01em; color: #e2e8f0 !important; margin-top: 1.5rem !important; margin-bottom: 0.5rem !important; }
+h4 { font-size: 14px !important; font-weight: 600 !important; color: #94a3b8 !important; text-transform: uppercase; letter-spacing: 0.06em; margin-top: 1rem !important; margin-bottom: 0.4rem !important; }
+
+code, pre { font-family: 'SF Mono', 'Cascadia Code', Consolas, monospace !important; }
+
+/* ── 2. Layout & spacing ────────────────────────────────────────────────── */
+.main .block-container {
+  padding: 1.5rem 1.5rem 3rem !important;
+  max-width: 1320px;
+}
+/* Tighter sidebar */
+section[data-testid="stSidebar"] .block-container {
+  padding: 1.5rem 0.75rem !important;
+}
+
+/* ── 3. Colour tokens ───────────────────────────────────────────────────── */
+/* Background:  #0a0c10 (deepest) → #111318 (surface) → #191d26 (card) → #222631 (raised) */
+/* Accent:      #3b82f6 (blue) — used sparingly for CTAs & highlights */
+/* Text:        #f1f5f9 (primary) → #94a3b8 (secondary) → #475569 (muted) */
+
+/* ── 4. Custom component classes ────────────────────────────────────────── */
+.metric-card {
+  background: #191d26;
+  border: 1px solid #222631;
+  border-radius: 12px;
+  padding: 16px 20px;
+  margin: 4px 0;
+}
+.signal-badge {
+  display: inline-block;
+  padding: 4px 14px;
+  border-radius: 100px;
+  font-weight: 600;
+  font-size: 12px;
+  font-family: 'Inter', sans-serif;
+  letter-spacing: 0.02em;
+}
+.section-header {
+  font-family: 'Inter', sans-serif;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #475569;
+  margin: 20px 0 10px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid #1e2433;
+}
+.score-bar-bg  { background: #1e2433; border-radius: 4px; height: 6px; margin: 3px 0 6px; }
+.score-bar-fill{ border-radius: 4px; height: 6px; }
+.earn-card     { background: #191d26; border: 1px solid #222631; border-radius: 10px; padding: 12px 16px; margin: 4px 0; font-size: 13px; }
+.deploy-box    { background: #191d26; border: 1px solid #2a3144; border-radius: 12px; padding: 18px; margin: 8px 0; }
+
+/* ── 5. Streamlit native element overrides ──────────────────────────────── */
+
+/* Metric cards */
+[data-testid="stMetric"] {
+  background: #191d26 !important;
+  border: 1px solid #222631 !important;
+  border-radius: 12px !important;
+  padding: 14px 18px !important;
+}
+[data-testid="stMetricLabel"]  { color: #64748b !important; font-size: 11px !important; font-weight: 600 !important; text-transform: uppercase; letter-spacing: 0.06em; }
+[data-testid="stMetricValue"]  { font-size: 22px !important; font-weight: 800 !important; letter-spacing: -0.03em !important; color: #f1f5f9 !important; }
+[data-testid="stMetricDelta"]  { font-size: 12px !important; font-weight: 600 !important; }
+
+/* Tabs: horizontal scroll on all screen sizes, thin underline active indicator */
+.stTabs [data-baseweb="tab-list"] {
+  gap: 0;
+  border-bottom: 1px solid #1e2433;
+  overflow-x: auto;
+  flex-wrap: nowrap;
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+  scroll-snap-type: x proximity;
+  padding-bottom: 0;
+}
+.stTabs [data-baseweb="tab-list"]::-webkit-scrollbar { display: none; }
+.stTabs [data-baseweb="tab"] { scroll-snap-align: start; }
+.stTabs [data-baseweb="tab"] {
+  font-size: 13px !important;
+  font-weight: 500 !important;
+  padding: 8px 16px !important;
+  color: #64748b !important;
+  border-bottom: 2px solid transparent !important;
+  white-space: nowrap;
+  background: transparent !important;
+}
+.stTabs [data-baseweb="tab"][aria-selected="true"] {
+  color: #f1f5f9 !important;
+  font-weight: 700 !important;
+  border-bottom-color: #3b82f6 !important;
+}
+
+/* Buttons: clean, minimal */
+.stButton > button {
+  font-family: 'Inter', sans-serif !important;
+  font-weight: 600 !important;
+  font-size: 13px !important;
+  border-radius: 8px !important;
+  padding: 8px 16px !important;
+  min-height: 38px !important;
+  border: 1px solid #2a3144 !important;
+  transition: all 0.15s ease !important;
+}
+.stButton > button[kind="primary"] {
+  background: #3b82f6 !important;
+  border-color: #3b82f6 !important;
+  color: #fff !important;
+}
+.stButton > button:hover {
+  border-color: #3b82f6 !important;
+  color: #3b82f6 !important;
+}
+
+/* Inputs & selects */
+.stTextInput input, .stSelectbox div[data-baseweb="select"] > div {
+  background: #111318 !important;
+  border: 1px solid #2a3144 !important;
+  border-radius: 8px !important;
+  color: #e2e8f0 !important;
+  font-size: 14px !important;
+  min-height: 40px !important;
+}
+.stTextInput input:focus { border-color: #3b82f6 !important; outline: none !important; }
+
+/* Expanders */
+[data-testid="stExpander"] {
+  border: 1px solid #1e2433 !important;
+  border-radius: 10px !important;
+  background: #111318 !important;
+  margin: 6px 0 !important;
+}
+.streamlit-expanderHeader { font-size: 13px !important; font-weight: 600 !important; color: #94a3b8 !important; padding: 10px 14px !important; }
+
+/* Dataframes: clean grid */
+[data-testid="stDataFrame"] {
+  font-size: 12px !important;
+  border-radius: 10px !important;
+  overflow: hidden;
+}
+[data-testid="stDataFrame"] table { border-collapse: collapse; }
+[data-testid="stDataFrame"] th { background: #111318 !important; color: #64748b !important; font-weight: 700 !important; font-size: 11px !important; text-transform: uppercase; letter-spacing: 0.05em; padding: 8px 10px !important; }
+[data-testid="stDataFrame"] td { color: #cbd5e1 !important; padding: 7px 10px !important; border-bottom: 1px solid #1e2433 !important; }
+
+/* Dividers */
+hr { border: none !important; border-top: 1px solid #1e2433 !important; margin: 1.2rem 0 !important; opacity: 1 !important; }
+
+/* Caption / helper text */
+.stCaption, [data-testid="stCaptionContainer"] { color: #475569 !important; font-size: 11px !important; }
+
+/* Markdown tables */
+.stMarkdown table { border-collapse: collapse; font-size: 12px; width: 100%; border-radius: 8px; overflow: hidden; }
+.stMarkdown table th { background: #111318; color: #94a3b8; font-weight: 700; font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; padding: 8px 12px; border: 1px solid #1e2433; }
+.stMarkdown table td { padding: 8px 12px; border: 1px solid #1e2433; color: #cbd5e1; }
+.stMarkdown table tr:hover td { background: #191d26; }
+
+/* Alerts */
+.stSuccess { background: rgba(16,185,129,0.08) !important; border: 1px solid rgba(16,185,129,0.25) !important; border-radius: 8px !important; color: #6ee7b7 !important; }
+.stWarning { background: rgba(245,158,11,0.08) !important; border: 1px solid rgba(245,158,11,0.25) !important; border-radius: 8px !important; }
+.stInfo    { background: rgba(59,130,246,0.08) !important; border: 1px solid rgba(59,130,246,0.2)  !important; border-radius: 8px !important; }
+.stError   { background: rgba(239,68,68,0.08)  !important; border: 1px solid rgba(239,68,68,0.25)  !important; border-radius: 8px !important; }
+
+/* ── 6. Sidebar toggle — do NOT hide or restyle ─────────────────────────── */
+/* These elements render SVG icons — font-family must never be set on them */
+[data-testid="collapsedControl"],
+[data-testid="collapsedControl"] svg,
+[data-testid="stSidebarCollapsedControl"],
+[data-testid="stSidebarCollapsedControl"] svg,
+button[kind="headerNoPadding"],
+button[kind="header"] {
+  display: flex !important;
+  visibility: visible !important;
+  opacity: 1 !important;
+  pointer-events: auto !important;
+}
+/* Explicitly unset any font-family that could corrupt SVG rendering */
+[data-testid="collapsedControl"] *,
+[data-testid="stSidebarCollapsedControl"] * {
+  font-family: inherit;
+}
+
+/* ── 7. Mobile — portrait & landscape ──────────────────────────────────── */
+@media (max-width: 768px) {
+  .main .block-container { padding: 0.8rem 0.6rem 2rem !important; }
+  section[data-testid="stSidebar"] .block-container { padding: 1rem 0.5rem !important; }
+
+  h1 { font-size: 22px !important; }
+  h2 { font-size: 18px !important; }
+  h3 { font-size: 15px !important; margin-top: 1rem !important; }
+  .section-header { font-size: 10px !important; }
+
+  [data-testid="stMetric"] { padding: 10px 12px !important; }
+  [data-testid="stMetricValue"] { font-size: 18px !important; }
+  [data-testid="stMetricLabel"] { font-size: 10px !important; }
+
+  .stButton > button { font-size: 12px !important; padding: 7px 12px !important; min-height: 40px !important; }
+  .stTextInput input { font-size: 16px !important; } /* prevents iOS zoom */
+  .stSelectbox div[data-baseweb="select"] > div { font-size: 14px !important; min-height: 44px !important; }
+
+  /* Tables: horizontal scroll wrapper */
+  [data-testid="stDataFrame"] { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  [data-testid="stDataFrame"] td, [data-testid="stDataFrame"] th { font-size: 11px !important; padding: 6px 8px !important; }
+  .stMarkdown { overflow-x: auto; }
+  .stMarkdown table td, .stMarkdown table th { padding: 6px 8px; font-size: 11px; }
+
+  /* Plotly chart padding reduction */
+  .js-plotly-plot .plotly { margin: 0 !important; }
+  .js-plotly-plot { width: 100% !important; }
+
+  /* Column gap reduction */
+  [data-testid="column"] { padding: 0 2px !important; }
+
+  /* Expanders full-width touch target */
+  .streamlit-expanderHeader { padding: 12px 10px !important; min-height: 44px; }
+
+  /* Alert messages readable */
+  .stSuccess, .stWarning, .stInfo, .stError { font-size: 12px !important; }
+}
+
+/* Landscape phone */
+@media (max-width: 900px) and (orientation: landscape) {
+  .main .block-container { padding: 0.5rem 1rem 2rem !important; }
+  h1 { font-size: 20px !important; }
+  [data-testid="stMetricValue"] { font-size: 17px !important; }
+}
+
+/* Very small (≤380px) */
+@media (max-width: 380px) {
+  .main .block-container { padding: 0.5rem 0.4rem 2rem !important; }
+  h1 { font-size: 20px !important; }
+  [data-testid="stMetricValue"] { font-size: 16px !important; }
+  .stButton > button { font-size: 11px !important; }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   ANIMATIONS & MICRO-INTERACTIONS — subtle, professional
+   ═══════════════════════════════════════════════════════════════════════════ */
+@keyframes fadeInUp {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+/* Metric cards fade in on render */
+[data-testid="stMetric"] {
+  animation: fadeInUp 0.4s ease both;
+  transition: transform 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+}
+[data-testid="stMetric"]:hover {
+  transform: translateY(-2px);
+  border-color: #2a3552 !important;
+  box-shadow: 0 6px 20px rgba(0,0,0,0.25);
+}
+
+/* Custom cards lift on hover */
+.metric-card, .earn-card, .deploy-box {
+  transition: transform 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.metric-card:hover, .earn-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 20px rgba(0,0,0,0.25);
+}
+
+/* Buttons: smooth press feedback */
+.stButton > button {
+  transition: all 0.15s cubic-bezier(0.4, 0, 0.2, 1) !important;
+}
+.stButton > button:active { transform: scale(0.97); }
+
+/* Tab content fades in */
+.stTabs [data-baseweb="tab-panel"] { animation: fadeIn 0.35s ease both; }
+
+/* Plotly charts fade in */
+.js-plotly-plot { animation: fadeIn 0.5s ease both; }
+
+/* Expander hover */
+[data-testid="stExpander"] { transition: border-color 0.15s ease; }
+[data-testid="stExpander"]:hover { border-color: #2a3552 !important; }
+
+/* Dataframe row hover already handled; add smooth */
+[data-testid="stDataFrame"] tr { transition: background 0.1s ease; }
+
+/* Links underline grow */
+a { transition: color 0.15s ease; }
+
+/* Respect reduced-motion preference */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   MOBILE COLUMN FIXES — prevent squashed/unreadable cells
+   ═══════════════════════════════════════════════════════════════════════════ */
+@media (max-width: 768px) {
+  /* Let Streamlit columns wrap instead of cramming side by side */
+  [data-testid="stHorizontalBlock"] {
+    flex-wrap: wrap !important;
+    gap: 8px !important;
+  }
+  /* Each column takes a sensible minimum width then wraps */
+  [data-testid="stHorizontalBlock"] > [data-testid="column"] {
+    min-width: calc(50% - 8px) !important;
+    flex: 1 1 calc(50% - 8px) !important;
+  }
+  /* Metric columns: 2 per row on mobile */
+  [data-testid="stHorizontalBlock"] > [data-testid="column"]:has([data-testid="stMetric"]) {
+    min-width: calc(50% - 8px) !important;
+  }
+}
+@media (max-width: 480px) {
+  /* On very small screens, some dense rows go full width */
+  [data-testid="stHorizontalBlock"] > [data-testid="column"]:has([data-testid="stMetric"]) {
+    min-width: 100% !important;
+    flex-basis: 100% !important;
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   LIGHT THEME — inspired by giga.ai
+   Activates when the user picks Light mode in Streamlit settings.
+   giga.ai aesthetic: near-white #fafafa bg, crisp black text, generous
+   whitespace, single blue accent, thin hairline borders.
+   ═══════════════════════════════════════════════════════════════════════════ */
+@media (prefers-color-scheme: light) {
+  /* Text colours — dark on light, NEVER light-on-light */
+  body, .stMarkdown, .stText, p, label,
+  [data-testid="stMarkdownContainer"] { color: #18181b !important; }
+
+  h1 { color: #09090b !important; }
+  h2, h3 { color: #18181b !important; }
+  h4 { color: #52525b !important; }
+
+  /* Backgrounds */
+  .stApp, .main { background: #fafafa !important; }
+  .main .block-container { background: transparent !important; }
+
+  /* Metric cards: white with hairline border */
+  [data-testid="stMetric"] {
+    background: #ffffff !important;
+    border: 1px solid #e4e4e7 !important;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.03) !important;
+  }
+  [data-testid="stMetricLabel"] { color: #71717a !important; }
+  [data-testid="stMetricValue"] { color: #09090b !important; }
+
+  /* Custom cards */
+  .metric-card, .earn-card, .deploy-box {
+    background: #ffffff !important;
+    border: 1px solid #e4e4e7 !important;
+    color: #18181b !important;
+  }
+
+  /* Section headers */
+  .section-header { color: #71717a !important; border-bottom-color: #e4e4e7 !important; }
+
+  /* Buttons — filled primary stays blue with WHITE text (high contrast) */
+  .stButton > button {
+    background: #ffffff !important;
+    border: 1px solid #d4d4d8 !important;
+    color: #18181b !important;
+  }
+  .stButton > button[kind="primary"] {
+    background: #2563eb !important;
+    border-color: #2563eb !important;
+    color: #ffffff !important;   /* explicit white — fixes invisible text */
+  }
+  .stButton > button:hover {
+    border-color: #2563eb !important;
+    color: #2563eb !important;
+  }
+  .stButton > button[kind="primary"]:hover {
+    background: #1d4ed8 !important;
+    color: #ffffff !important;
+  }
+
+  /* Inputs */
+  .stTextInput input, .stSelectbox div[data-baseweb="select"] > div {
+    background: #ffffff !important;
+    border: 1px solid #d4d4d8 !important;
+    color: #18181b !important;
+  }
+
+  /* Tabs */
+  .stTabs [data-baseweb="tab-list"] { border-bottom-color: #e4e4e7 !important; }
+  .stTabs [data-baseweb="tab"] { color: #71717a !important; }
+  .stTabs [data-baseweb="tab"][aria-selected="true"] {
+    color: #09090b !important;
+    border-bottom-color: #2563eb !important;
+  }
+
+  /* Expanders */
+  [data-testid="stExpander"] { background: #ffffff !important; border-color: #e4e4e7 !important; }
+  .streamlit-expanderHeader { color: #3f3f46 !important; }
+
+  /* Dataframes */
+  [data-testid="stDataFrame"] th { background: #f4f4f5 !important; color: #71717a !important; }
+  [data-testid="stDataFrame"] td { color: #27272a !important; border-bottom-color: #e4e4e7 !important; }
+
+  /* Markdown tables */
+  .stMarkdown table th { background: #f4f4f5; color: #52525b; border-color: #e4e4e7; }
+  .stMarkdown table td { color: #27272a; border-color: #e4e4e7; }
+  .stMarkdown table tr:hover td { background: #f9f9fb; }
+
+  /* Dividers */
+  hr { border-top-color: #e4e4e7 !important; }
+
+  /* Captions */
+  .stCaption, [data-testid="stCaptionContainer"] { color: #a1a1aa !important; }
+
+  /* Sidebar */
+  section[data-testid="stSidebar"] { background: #f4f4f5 !important; }
+  section[data-testid="stSidebar"] * { color: #18181b !important; }
 }
 </style>
 """, unsafe_allow_html=True)
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
+
+def render_mobile_bottom_nav(active: str = "analyzer"):
+    """
+    Fixed bottom navigation bar — visible only on mobile (≤768px).
+    Uses query-param links so taps navigate between the three pages.
+    Thin-line SVG icons, giga.ai-style minimal.
+    """
+    def _item(page, label, svg_path):
+        is_active = (page == active)
+        color = "#3b82f6" if is_active else "#64748b"
+        return (
+            f"<a href='?nav={page}' target='_self' class='mnav-item' "
+            f"style='color:{color}'>"
+            f"<svg width='22' height='22' viewBox='0 0 24 24' fill='none' "
+            f"stroke='{color}' stroke-width='1.8' stroke-linecap='round' "
+            f"stroke-linejoin='round'>{svg_path}</svg>"
+            f"<span class='mnav-label'>{label}</span></a>"
+        )
+
+    analyzer_icon  = "<path d='M3 3v18h18'/><path d='m7 14 4-4 3 3 5-6'/>"
+    screener_icon  = "<circle cx='11' cy='11' r='7'/><path d='m21 21-4.3-4.3'/>"
+    portfolio_icon = "<rect x='3' y='4' width='18' height='16' rx='2'/><path d='M3 10h18M9 4v16'/>"
+
+    st.markdown(f"""
+    <style>
+      .mnav {{ display: none; }}
+      @media (max-width: 768px) {{
+        .mnav {{
+          display: flex;
+          position: fixed;
+          bottom: 0; left: 0; right: 0;
+          height: 60px;
+          background: rgba(17,19,24,0.96);
+          backdrop-filter: blur(12px);
+          border-top: 1px solid #1e2433;
+          z-index: 99999;
+          justify-content: space-around;
+          align-items: center;
+          padding-bottom: env(safe-area-inset-bottom, 0);
+        }}
+        .mnav-item {{
+          display: flex; flex-direction: column; align-items: center;
+          gap: 3px; text-decoration: none; flex: 1;
+          font-family: 'Inter', sans-serif;
+          transition: color 0.15s ease;
+        }}
+        .mnav-label {{ font-size: 10px; font-weight: 600; }}
+        .mnav-item:active {{ transform: scale(0.92); }}
+        /* Push content up so bottom nav doesn't cover it */
+        .main .block-container {{ padding-bottom: 80px !important; }}
+      }}
+    </style>
+    <div class='mnav'>
+      {_item('analyzer',  'Analyzer',  analyzer_icon)}
+      {_item('screener',  'Screener',  screener_icon)}
+      {_item('portfolio', 'Portfolio', portfolio_icon)}
+    </div>
+    """, unsafe_allow_html=True)
+
+
+def render_watchlist_sidebar(current_tickers: list):
+    """
+    Sidebar watchlist — save tickers for quick re-loading across sessions.
+    Persists in browser localStorage via a sync component, mirrored in session_state.
+    """
+    import streamlit.components.v1 as _components
+
+    st.markdown("---")
+    st.markdown("**Watchlist**")
+
+    if "watchlist" not in st.session_state:
+        st.session_state["watchlist"] = []
+    watchlist = st.session_state["watchlist"]
+
+    # Add currently-selected tickers to watchlist
+    addable = [t for t in current_tickers if t and t not in watchlist]
+    if addable:
+        if st.button(f"☆ Save current ({', '.join(addable)})",
+                     key="wl_add", use_container_width=True):
+            for t in addable:
+                if t not in watchlist:
+                    watchlist.append(t)
+            st.session_state["watchlist"] = watchlist
+            _sync_watchlist_to_browser(watchlist)
+            st.rerun()
+
+    if not watchlist:
+        st.caption("Save tickers here for quick access next time.")
+        # Still render the loader so localStorage can restore on first load
+        _restore_watchlist_from_browser()
+        return
+
+    # Render watchlist chips with load / remove
+    for wt in watchlist:
+        name = TICKER_NAMES.get(wt, "")
+        c1, c2, c3 = st.columns([2.6, 1, 0.7])
+        with c1:
+            st.markdown(
+                f"<div style='font-size:12px;font-weight:600;color:#e2e8f0;padding-top:6px'>"
+                f"{wt}</div>"
+                + (f"<div style='font-size:9px;color:#64748b'>{name[:20]}</div>" if name else ""),
+                unsafe_allow_html=True)
+        with c2:
+            if st.button("Load", key=f"wl_load_{wt}", use_container_width=True):
+                slots = st.session_state.get("ticker_slots", ["","","","",""])
+                if wt not in slots:
+                    for si in range(5):
+                        if not slots[si]:
+                            slots[si] = wt
+                            st.session_state["ticker_slots"] = slots
+                            st.session_state.pop(f"t{si}", None)
+                            break
+                st.rerun()
+        with c3:
+            if st.button("✕", key=f"wl_rm_{wt}", help="Remove from watchlist"):
+                watchlist.remove(wt)
+                st.session_state["watchlist"] = watchlist
+                _sync_watchlist_to_browser(watchlist)
+                st.rerun()
+
+    if len(watchlist) > 1:
+        if st.button("Load all to slots", key="wl_load_all", use_container_width=True):
+            st.session_state["ticker_slots"] = (watchlist[:5] + ["","","","",""])[:5]
+            for si in range(5):
+                st.session_state.pop(f"t{si}", None)
+            st.rerun()
+
+    _restore_watchlist_from_browser()
+
+
+def _sync_watchlist_to_browser(watchlist: list):
+    """Write the watchlist to browser localStorage so it persists across sessions."""
+    import streamlit.components.v1 as _components
+    import json as _json
+    js = _json.dumps(watchlist)
+    _components.html(f"""
+    <script>
+      try {{ localStorage.setItem('sa_watchlist', JSON.stringify({js})); }} catch(e) {{}}
+    </script>
+    """, height=0)
+
+
+def _restore_watchlist_from_browser():
+    """
+    On first load, read the watchlist from localStorage and push it into the app
+    via a query param. Only runs once per session.
+    """
+    import streamlit.components.v1 as _components
+    if st.session_state.get("_wl_restored"):
+        return
+    st.session_state["_wl_restored"] = True
+    _components.html("""
+    <script>
+      try {
+        const wl = localStorage.getItem('sa_watchlist');
+        if (wl && wl !== '[]') {
+          const parent = window.parent;
+          const url = new URL(parent.location);
+          if (!url.searchParams.get('wl')) {
+            url.searchParams.set('wl', encodeURIComponent(wl));
+            parent.history.replaceState({}, '', url);
+          }
+        }
+      } catch(e) {}
+    </script>
+    """, height=0)
+
 
 def fmt(v, pct=False, dec=2, prefix="", native_ccy="USD"):
     """Safe formatter — coerces v to float, returns '—' on any bad value."""
@@ -120,7 +738,7 @@ def fmt(v, pct=False, dec=2, prefix="", native_ccy="USD"):
     if pct:
         return f"{v:+.1%}" if abs(v) < 10 else f"{v:.1%}"
     if prefix == "$":
-        disp_ccy = st.session_state.get("display_ccy_code", "USD")
+        disp_ccy = st.session_state.get("display_ccy_code", "NATIVE")
         rates    = st.session_state.get("fx_rates", {})
         return fmt_currency(v, native_ccy, disp_ccy, rates)
     return f"{v:.{dec}f}"
@@ -410,7 +1028,7 @@ def build_football_field(football_field: list, dcf_results: dict,
     x_max = max(all_vals) * 1.15
 
     fig.update_layout(
-        title=dict(text="⚽ Football Field Valuation — CCA + DCF Ranges",
+        title=dict(text="Football Field Valuation — CCA + DCF Ranges",
                    font_size=13, x=0.01),
         height=max(300, len(rows) * 52 + 100),
         template="plotly_dark",
@@ -496,7 +1114,7 @@ def build_stock_benchmark_chart(ticker: str, hist: pd.DataFrame,
     import yfinance as yf
 
     name = info.get("shortName") or ticker
-    st.markdown(section_header("📊 Price vs Benchmark"), unsafe_allow_html=True)
+    st.markdown(section_header("Price vs Benchmark"), unsafe_allow_html=True)
 
     col1, col2, col3 = st.columns([2.5, 2, 0.8])
     with col1:
@@ -672,7 +1290,7 @@ def build_financials_chart(fund, ticker):
 
     # Get display currency
     native_ccy = "USD"
-    disp_ccy   = st.session_state.get("display_ccy_code", "USD")
+    disp_ccy   = st.session_state.get("display_ccy_code", "NATIVE")
     ccy_sym    = CURRENCY_SYMBOLS.get(disp_ccy, disp_ccy)
 
     # Use two completely independent figures stacked — cleanest legend control
@@ -978,7 +1596,7 @@ def render_earnings_section(data, ticker, earn_rows, cal_info, estimates, eps_tr
 
     # ── Analyst Estimates Table ───────────────────────────────────────────────
     if estimates:
-        st.markdown(section_header("📐 Analyst Estimates"), unsafe_allow_html=True)
+        st.markdown(section_header("Analyst Estimates"), unsafe_allow_html=True)
         period_labels = {"0q": "This Quarter", "1q": "Next Quarter", "0y": "This Year", "1y": "Next Year"}
         for period_key, period_label in period_labels.items():
             eps_k = f"eps_est_{period_key}"; rev_k = f"rev_est_{period_key}"
@@ -1006,14 +1624,14 @@ def render_earnings_section(data, ticker, earn_rows, cal_info, estimates, eps_tr
 
     # ── EPS Revision Trend ────────────────────────────────────────────────────
     if eps_trend_data:
-        st.markdown(section_header("📉 EPS Estimate Revisions"), unsafe_allow_html=True)
+        st.markdown(section_header("EPS Estimate Revisions"), unsafe_allow_html=True)
         fig_trend = build_eps_trend_chart(eps_trend_data, ticker)
         if fig_trend.data:
             st.plotly_chart(fig_trend, use_container_width=True, key=f"pc_{ticker}_2")
 
     # ── Historical Earnings Surprise ─────────────────────────────────────────
     past = [r for r in earn_rows if not r["is_future"]]
-    st.markdown(section_header("📊 EPS Surprise History"), unsafe_allow_html=True)
+    st.markdown(section_header("EPS Surprise History"), unsafe_allow_html=True)
     if past:
         fig_sur = build_earnings_surprise_chart(earn_rows, ticker)
         if fig_sur.data:
@@ -1049,7 +1667,7 @@ def render_earnings_section(data, ticker, earn_rows, cal_info, estimates, eps_tr
         # ── Upcoming future dates ─────────────────────────────────────────────
         future = [r for r in earn_rows if r["is_future"]]
         if future:
-            st.markdown(section_header("🔮 Upcoming Earnings (Estimated Dates)"), unsafe_allow_html=True)
+            st.markdown(section_header("Upcoming Earnings (Estimated Dates)"), unsafe_allow_html=True)
             for r in future[:4]:
                 st.markdown(f"""<div class='earn-card'>
                   <span style='color:#94a3b8'>📅 {r['date']}</span>
@@ -1069,9 +1687,12 @@ def render_intelligence_tab(ticker, info, scoring, signals, sentiment, fund, com
     description  = info.get("longBusinessSummary", "")
 
     # ── SWOT ─────────────────────────────────────────────────────────────────
-    st.markdown(section_header("♟️ Dynamic SWOT Analysis"), unsafe_allow_html=True)
+    st.markdown(section_header("Dynamic SWOT Analysis"), unsafe_allow_html=True)
     st.caption("Generated from live financial data, technical signals, peer comparison, and sentiment.")
 
+    # Inject recent news into sentiment so SWOT can use headline-driven signals
+    if isinstance(sentiment, dict) and "_news_items" not in sentiment:
+        sentiment = {**sentiment, "_news_items": st.session_state.get(f"news_{ticker}", [])}
     swot = generate_swot(info, scoring, signals, sentiment, fund, comparison)
 
     sw_col, ot_col = st.columns(2)
@@ -1118,7 +1739,7 @@ def render_intelligence_tab(ticker, info, scoring, signals, sentiment, fund, com
         st.markdown("</div>", unsafe_allow_html=True)
 
     # ── Customers & Suppliers ────────────────────────────────────────────────
-    st.markdown(section_header("🤝 Customers & Suppliers"), unsafe_allow_html=True)
+    st.markdown(section_header("Customers & Suppliers"), unsafe_allow_html=True)
     cs = extract_customers_suppliers(description)
 
     c1, c2 = st.columns(2)
@@ -1149,7 +1770,7 @@ def render_intelligence_tab(ticker, info, scoring, signals, sentiment, fund, com
             st.caption("Supplier data not in public description. Check the 10-K/annual report filing below.")
 
     # ── Regulatory Filings ───────────────────────────────────────────────────
-    st.markdown(section_header("📁 Regulatory Filings & Disclosures"), unsafe_allow_html=True)
+    st.markdown(section_header("Regulatory Filings & Disclosures"), unsafe_allow_html=True)
 
     reg = get_regulatory_info(country, company_name)
     if reg:
@@ -1207,7 +1828,7 @@ def render_news_tab(ticker, info, news_items):
     tick_enc     = urllib.parse.quote(ticker)
 
     # ── Earnings summary from available data ──────────────────────────────────
-    st.markdown(section_header("📊 Recent Earnings Summary"), unsafe_allow_html=True)
+    st.markdown(section_header("Recent Earnings Summary"), unsafe_allow_html=True)
 
     eps_ttm   = info.get("trailingEps")
     eps_fwd   = info.get("forwardEps")
@@ -1260,7 +1881,7 @@ def render_news_tab(ticker, info, news_items):
 
     # Earnings quality assessment
     if eps_ttm is not None or net_m is not None:
-        with st.expander("📋 Earnings Quality Assessment"):
+        with st.expander("Earnings Quality Assessment"):
             items = []
             if eps_ttm and eps_ttm > 0:
                 items.append(("✅","Profitable","Company generating positive EPS"))
@@ -1290,7 +1911,7 @@ def render_news_tab(ticker, info, news_items):
     st.divider()
 
     # ── Free news source links ────────────────────────────────────────────────
-    st.markdown(section_header("🔗 News Sources"), unsafe_allow_html=True)
+    st.markdown(section_header("News Sources"), unsafe_allow_html=True)
     links = build_news_search_links(ticker, company_name)
     cols  = st.columns(4)
     for i, link in enumerate(links):
@@ -1306,20 +1927,59 @@ def render_news_tab(ticker, info, news_items):
     st.divider()
 
     # ── Recent news feed ──────────────────────────────────────────────────────
-    st.markdown(section_header("📰 Latest News"), unsafe_allow_html=True)
+    st.markdown(section_header("Latest News"), unsafe_allow_html=True)
 
     if news_items:
         # Sort by date (most recent first)
         def _ts(item):
-            return item.get("providerPublishTime", 0) or 0
+            return item.get("providerPublishTime", 0) or item.get("timestamp", 0) or 0
         sorted_news = sorted(news_items, key=_ts, reverse=True)
 
+        # Top 5 most recent — highlighted
+        st.markdown(
+            "<div style='font-size:11px;font-weight:700;text-transform:uppercase;"
+            "letter-spacing:0.06em;color:#3b82f6;margin:4px 0 8px'>"
+            "5 Most Recent Articles</div>", unsafe_allow_html=True)
         now = datetime.datetime.now()
-        for item in sorted_news[:15]:
+        for item in sorted_news[:5]:
+            title = item.get("title","")
+            link  = item.get("link","")
+            pub   = item.get("publisher","")
+            ts    = item.get("providerPublishTime", 0) or item.get("timestamp", 0)
+            if not title or not link:
+                continue
+            age = ""
+            if ts:
+                try:
+                    dt = datetime.datetime.fromtimestamp(ts)
+                    days_ago = (now - dt).days
+                    age = ("Today" if days_ago == 0 else
+                           f"{days_ago}d ago" if days_ago < 30 else
+                           dt.strftime("%d %b %Y"))
+                except Exception:
+                    pass
+            st.markdown(
+                f"<div style='background:#161b26;border:1px solid #1e2433;"
+                f"border-left:3px solid #3b82f6;border-radius:0 8px 8px 0;"
+                f"padding:10px 14px;margin:5px 0'>"
+                f"<a href='{link}' target='_blank' style='color:#93c5fd;"
+                f"font-size:13px;font-weight:600;text-decoration:none;line-height:1.4'>"
+                f"{title}</a>"
+                f"<div style='font-size:11px;color:#64748b;margin-top:4px'>"
+                f"{pub}{('  ·  ' + age) if age else ''}</div></div>",
+                unsafe_allow_html=True)
+
+        st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+        st.markdown(
+            "<div style='font-size:11px;font-weight:700;text-transform:uppercase;"
+            "letter-spacing:0.06em;color:#64748b;margin:8px 0 6px'>"
+            "More Headlines</div>", unsafe_allow_html=True)
+
+        for item in sorted_news[5:15]:
             title     = item.get("title","")
             link      = item.get("link","")
             publisher = item.get("publisher","")
-            ts        = item.get("providerPublishTime", 0)
+            ts        = item.get("providerPublishTime", 0) or item.get("timestamp", 0)
             if not title or not link:
                 continue
 
@@ -1357,13 +2017,18 @@ def render_news_tab(ticker, info, news_items):
     else:
         st.info("No recent news found via Yahoo Finance. Use the source links above.")
 
+    # ── News grouped by outlet (5 per source) ────────────────────────────────
+    if news_items:
+        st.divider()
+        render_grouped_news(news_items, ticker, info)
+
     # ── Earnings calendar links ───────────────────────────────────────────────
-    st.markdown(section_header("📅 Earnings Calendar"), unsafe_allow_html=True)
+    st.markdown(section_header("Earnings Calendar"), unsafe_allow_html=True)
     st.markdown(
-        f"[📅 Earnings Whispers](https://www.earningswhispers.com/stocks/{ticker.lower()})  ·  "
-        f"[📊 Seeking Alpha Earnings](https://seekingalpha.com/symbol/{tick_enc}/earnings)  ·  "
-        f"[🗓️ Yahoo Finance Financials](https://finance.yahoo.com/quote/{tick_enc}/financials/)  ·  "
-        f"[📈 MarketBeat Earnings](https://www.marketbeat.com/stocks/{info.get('exchange','NASDAQ')}/{ticker}/earnings/)"
+        f"[Earnings Whispers](https://www.earningswhispers.com/stocks/{ticker.lower()})  ·  "
+        f"[Seeking Alpha](https://seekingalpha.com/symbol/{tick_enc}/earnings)  ·  "
+        f"[Yahoo Finance](https://finance.yahoo.com/quote/{tick_enc}/financials/)  ·  "
+        f"[MarketBeat](https://www.marketbeat.com/stocks/{info.get('exchange','NASDAQ')}/{ticker}/earnings/)"
     )
 
 
@@ -1434,7 +2099,7 @@ def render_cca_tab(ticker, info, peer_data, dcf, current_price):
             st.plotly_chart(fig_ff, use_container_width=True, key=f"pc_{ticker}_4")
 
     # ── Methodology explanation ───────────────────────────────────────────────
-    with st.expander("📖 How CCA works (BIWS / JPMorgan methodology)", expanded=False):
+    with st.expander("How CCA works (BIWS / JPMorgan methodology)", expanded=False):
         st.markdown("""
 **Comparable Company Analysis** values a company based on what similar public companies trade at in the market right now.
 
@@ -1471,7 +2136,7 @@ Implied Share Price = Peer Multiple × Target's EPS (or Book Value per Share)
         """)
 
     # ── Peer Multiples Table ──────────────────────────────────────────────────
-    st.markdown(section_header("📊 Peer Multiples Table"), unsafe_allow_html=True)
+    st.markdown(section_header("Peer Multiples Table"), unsafe_allow_html=True)
     st.caption("Target's own multiples shown for comparison. "
                "Peer statistics: Min | P25 | **Median** | P75 | Max")
 
@@ -1530,7 +2195,7 @@ Implied Share Price = Peer Multiple × Target's EPS (or Book Value per Share)
     st.divider()
 
     # ── Implied Price Table ───────────────────────────────────────────────────
-    st.markdown(section_header("💰 Implied Share Prices"), unsafe_allow_html=True)
+    st.markdown(section_header("Implied Share Prices"), unsafe_allow_html=True)
     st.caption("Applying peer percentile multiples to the target company's own metrics")
 
     implied = cca.get("implied_prices", {})
@@ -1638,7 +2303,7 @@ def render_deep_analysis_tab(ticker, info, deep, fund, data):
 
         # ── DuPont Decomposition ──────────────────────────────────────────
         if dup and not dup.get("error"):
-            st.markdown(section_header("⚗️ DuPont ROE Decomposition"), unsafe_allow_html=True)
+            st.markdown(section_header("️ DuPont ROE Decomposition"), unsafe_allow_html=True)
             st.caption("ROE = Net Margin × Asset Turnover × Equity Multiplier")
             components = [
                 ("Net Margin",       dup.get("net_margin"),        "Profitability — how much of each revenue dollar becomes profit"),
@@ -1671,7 +2336,7 @@ def render_deep_analysis_tab(ticker, info, deep, fund, data):
     with col_right:
         # ── Altman Z-Score ────────────────────────────────────────────────
         if alt and not alt.get("error"):
-            st.markdown(section_header("⚡ Altman Z-Score"), unsafe_allow_html=True)
+            st.markdown(section_header("Altman Z-Score"), unsafe_allow_html=True)
             st.caption("Bankruptcy risk model — developed by Edward Altman (1968)")
             zc = alt["color"]
             st.markdown(
@@ -1697,7 +2362,7 @@ def render_deep_analysis_tab(ticker, info, deep, fund, data):
 
         # ── Capital Efficiency ────────────────────────────────────────────
         if cap:
-            st.markdown(section_header("💎 Capital Efficiency"), unsafe_allow_html=True)
+            st.markdown(section_header("Capital Efficiency"), unsafe_allow_html=True)
             for key, metric in cap.items():
                 if not isinstance(metric, dict) or "value" not in metric:
                     continue
@@ -1719,7 +2384,7 @@ def render_deep_analysis_tab(ticker, info, deep, fund, data):
 
         # ── Operating Leverage ────────────────────────────────────────────
         if opl and not opl.get("error") and opl.get("dol") is not None:
-            st.markdown(section_header("⚙️ Operating Leverage"), unsafe_allow_html=True)
+            st.markdown(section_header("️ Operating Leverage"), unsafe_allow_html=True)
             dol = opl["dol"]
             dol_c = "#EF5350" if dol > 3 else ("#FFC107" if dol > 1.5 else "#68d391")
             st.markdown(
@@ -1734,7 +2399,7 @@ def render_deep_analysis_tab(ticker, info, deep, fund, data):
     st.divider()
 
     # ── Forward Growth Analysis ───────────────────────────────────────────────
-    st.markdown("### 📈 Forward Growth & Analyst Estimates")
+    st.markdown("### Forward Growth & Analyst Estimates")
     if fwd:
         fg1, fg2, fg3 = st.columns(3)
         if fwd.get("rev_growth"):
@@ -1748,7 +2413,7 @@ def render_deep_analysis_tab(ticker, info, deep, fund, data):
         rev_4w = fwd.get("estimate_revision_4w")
         rev_3m = fwd.get("estimate_revision_3m")
         if rev_4w is not None or rev_3m is not None:
-            st.markdown(section_header("📐 EPS Estimate Revisions"), unsafe_allow_html=True)
+            st.markdown(section_header("EPS Estimate Revisions"), unsafe_allow_html=True)
             rc1, rc2 = st.columns(2)
             if rev_4w is not None:
                 c4 = "#68d391" if rev_4w > 0 else "#fc8181"
@@ -1768,7 +2433,7 @@ def render_deep_analysis_tab(ticker, info, deep, fund, data):
     st.divider()
 
     # ── Macro & Industry Sensitivity ──────────────────────────────────────────
-    st.markdown("### 🌍 Market, Industry & Macro Factors")
+    st.markdown("### Market, Industry & Macro Factors")
     macro_profile = SECTOR_MACRO_SENSITIVITY.get(sector, {})
 
     if macro_profile:
@@ -1844,8 +2509,48 @@ def render_deep_analysis_tab(ticker, info, deep, fund, data):
 
     st.divider()
 
+    # ── AI Supply Chain Positioning ──────────────────────────────────────────
+    ai_ctx = get_ai_supply_chain_context(info)
+    if ai_ctx and ai_ctx.get("layer"):
+        st.markdown("### AI Supply Chain Positioning")
+        layer        = ai_ctx["layer"]
+        layer_detail = ai_ctx.get("layer_detail", {})
+        in_universe  = ai_ctx.get("in_universe", False)
+        thesis       = ai_ctx.get("thesis", "")
+
+        badge = ("Curated universe member" if in_universe
+                 else "Industry-inferred positioning")
+        st.markdown(
+            f"<div style='background:#1a1d2e;border:1px solid #3a3f5c;border-radius:10px;"
+            f"padding:14px 18px;margin-bottom:10px'>"
+            f"<div style='display:flex;justify-content:space-between;align-items:center;"
+            f"flex-wrap:wrap;gap:8px'>"
+            f"<div style='font-size:15px;font-weight:700;color:#e2e8f0'>{layer}</div>"
+            f"<div style='font-size:10px;color:#718096;border:1px solid #3a3f5c;"
+            f"border-radius:6px;padding:2px 8px'>{badge}</div>"
+            f"</div>"
+            + (f"<div style='font-size:12px;color:#90cdf4;margin-top:8px;line-height:1.5'>"
+               f"{thesis}</div>" if thesis else "")
+            + f"</div>", unsafe_allow_html=True)
+
+        if layer_detail:
+            for lbl, key in [("Demand driver", "demand_driver"),
+                              ("Key metrics to watch", "key_metrics"),
+                              ("Cycle risk", "cycle_risk")]:
+                v = layer_detail.get(key, "")
+                if v:
+                    st.markdown(
+                        f"<div style='padding:8px 14px;border-left:3px solid #42A5F5;"
+                        f"margin:4px 0;background:#0e1117;border-radius:0 6px 6px 0'>"
+                        f"<div style='font-size:11px;font-weight:700;color:#718096;"
+                        f"text-transform:uppercase;letter-spacing:0.5px'>{lbl}</div>"
+                        f"<div style='font-size:12px;color:#cbd5e0;margin-top:3px;"
+                        f"line-height:1.55'>{v}</div>"
+                        f"</div>", unsafe_allow_html=True)
+        st.divider()
+
     # ── Government & External Factors ────────────────────────────────────────
-    st.markdown("### 🏛️ Government, Regulation & External Factors")
+    st.markdown("### Government, Regulation & External Factors")
     gov = get_government_factors(info)
     risk_level = gov.get("regulatory_risk","moderate")
     risk_color = RISK_COLORS.get(risk_level,"#FFC107")
@@ -1875,6 +2580,35 @@ def render_deep_analysis_tab(ticker, info, deep, fund, data):
         st.info(f"No specific regulatory profile for the '{gov.get('sector','')}' sector. "
                 "General regulatory environment applies.")
 
+    # ── AI Supply Chain / Semiconductor industry context ─────────────────────
+    ai_ctx = get_ai_supply_chain_context(info)
+    if ai_ctx:
+        st.divider()
+        st.markdown("### AI Hardware Supply Chain Context")
+        st.caption("This company appears to operate in the semiconductor / AI hardware "
+                   "supply chain. The structural drivers and risks below shape its outlook.")
+
+        ctx_groups = [
+            ("Structural Demand Drivers", ai_ctx.get("demand_drivers", []), "#3fa66a"),
+            ("Cyclical & Company Risks",  ai_ctx.get("cyclical_risks", []), "#d4915a"),
+            ("Geopolitical Factors",      ai_ctx.get("geopolitical", []),   "#5a9fd4"),
+        ]
+        for group_title, items, accent in ctx_groups:
+            if not items:
+                continue
+            st.markdown(
+                f"<div style='font-size:13px;font-weight:700;color:#e2e8f0;"
+                f"margin:14px 0 6px'>{group_title}</div>",
+                unsafe_allow_html=True)
+            for factor_name, factor_desc in items:
+                st.markdown(
+                    f"<div style='padding:10px 14px;border-left:3px solid {accent};"
+                    f"margin:5px 0;background:#161922;border-radius:0 8px 8px 0'>"
+                    f"<div style='font-size:13px;font-weight:600;color:#e2e8f0'>{factor_name}</div>"
+                    f"<div style='font-size:12px;color:#94a3b8;margin-top:4px;"
+                    f"line-height:1.55'>{factor_desc}</div>"
+                    f"</div>", unsafe_allow_html=True)
+
     st.markdown("""
 > **Data sources:** Financial ratios from yfinance (Yahoo Finance).
 > Macro sensitivity profiles compiled from Bloomberg sector factor research,
@@ -1883,6 +2617,206 @@ def render_deep_analysis_tab(ticker, info, deep, fund, data):
 > Piotroski F-Score: Piotroski (2000) — *Journal of Accounting Research*.
 > Altman Z-Score: Altman (1968, 1983) — *Journal of Finance*.
     """)
+
+# ─── ETF / Fund Tab ───────────────────────────────────────────────────────────
+
+def render_etf_tab(ticker, etf, data, indicators):
+    """
+    Render an ETF/fund analysis tab. ETFs are baskets of securities, not
+    operating companies — so we show holdings, allocations, and fund economics
+    instead of DCF / earnings / margins.
+    """
+    if not etf or etf.get("error"):
+        st.error(f"Could not load ETF data: {etf.get('error','unknown error')}")
+        return
+
+    name     = etf.get("name", ticker)
+    price    = etf.get("price", 0)
+    ccy      = etf.get("currency", "USD")
+
+    # ── Header ────────────────────────────────────────────────────────────────
+    st.markdown(
+        f"<div style='display:flex;align-items:baseline;gap:12px;flex-wrap:wrap'>"
+        f"<span style='font-size:26px;font-weight:800;color:#e2e8f0'>{ticker}</span>"
+        f"<span style='font-size:15px;color:#94a3b8'>{name}</span>"
+        f"<span style='background:#2d3748;color:#5a9fd4;border-radius:6px;"
+        f"padding:2px 10px;font-size:12px;font-weight:600'>ETF / Fund</span>"
+        f"</div>",
+        unsafe_allow_html=True)
+
+    cat_bits = [b for b in [etf.get("category"), etf.get("fund_family")] if b]
+    if cat_bits:
+        st.caption("  ·  ".join(cat_bits))
+
+    # ── Price + key fund metrics ──────────────────────────────────────────────
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("Price", fmt(price, prefix="$"))
+
+    er = etf.get("expense_ratio")
+    if er is not None:
+        c2.metric("Expense Ratio", f"{er:.2%}")
+    aum = etf.get("total_assets")
+    if aum:
+        aum_str = (f"${aum/1e9:.1f}B" if aum >= 1e9 else
+                   f"${aum/1e6:.0f}M" if aum >= 1e6 else f"${aum:,.0f}")
+        c3.metric("AUM", aum_str)
+    y = etf.get("yield")
+    if y is not None:
+        c4.metric("Yield", f"{y:.2%}")
+    ytd = etf.get("ytd_return")
+    if ytd is not None:
+        c5.metric("YTD Return", f"{ytd:+.1%}")
+
+    # Second metrics row
+    d1, d2, d3, d4, d5 = st.columns(5)
+    r3 = etf.get("three_yr_return")
+    if r3 is not None: d1.metric("3Y Avg Return", f"{r3:+.1%}")
+    r5 = etf.get("five_yr_return")
+    if r5 is not None: d2.metric("5Y Avg Return", f"{r5:+.1%}")
+    b3 = etf.get("beta_3yr")
+    if b3 is not None: d3.metric("3Y Beta", f"{b3:.2f}")
+    nav = etf.get("nav")
+    if nav: d4.metric("NAV", fmt(nav, prefix="$"))
+    hi, lo = etf.get("52w_high"), etf.get("52w_low")
+    if hi and lo: d5.metric("52W Range", f"${lo:.0f}–${hi:.0f}")
+
+    st.divider()
+
+    # ── Description ───────────────────────────────────────────────────────────
+    desc = etf.get("description")
+    if desc:
+        with st.expander("Fund Description", expanded=False):
+            st.markdown(f"<div style='font-size:13px;color:#cbd5e1;line-height:1.6'>{desc}</div>",
+                        unsafe_allow_html=True)
+
+    col_left, col_right = st.columns(2, gap="large")
+
+    # ── Top Holdings ──────────────────────────────────────────────────────────
+    with col_left:
+        st.markdown(section_header("Top Holdings"), unsafe_allow_html=True)
+        th = etf.get("top_holdings")
+        if isinstance(th, pd.DataFrame) and not th.empty:
+            df = th.copy()
+            # Normalise column names
+            df.columns = [str(c).strip() for c in df.columns]
+            # Find the weight column
+            weight_col = None
+            for c in df.columns:
+                if "weight" in c.lower() or "%" in c or "holding" in c.lower():
+                    weight_col = c; break
+            display_rows = []
+            for idx, row in df.head(15).iterrows():
+                sym  = str(idx) if not isinstance(idx, int) else str(row.get("Symbol", row.iloc[0]))
+                nm   = str(row.get("Name", row.get("name", ""))) if hasattr(row, "get") else ""
+                w    = None
+                if weight_col and weight_col in row:
+                    w = _safe_pct(row[weight_col])
+                display_rows.append((sym, nm, w))
+            for sym, nm, w in display_rows:
+                w_str    = f"{w:.1%}" if w is not None else ""
+                # Use ticker_tooltip so hovering shows the full holding name
+                sym_html = ticker_tooltip(sym, nm, 'color:#e2e8f0;font-weight:700')
+                st.markdown(
+                    f"<div style='display:flex;justify-content:space-between;"
+                    f"padding:5px 0;border-bottom:1px solid #1e2130;font-size:12px'>"
+                    f"<span>{sym_html}"
+                    f"{(' <span style="color:#94a3b8">· ' + nm[:28] + '</span>') if nm else ''}</span>"
+                    f"<span style='color:#5a9fd4;font-weight:600'>{w_str}</span>"
+                    f"</div>", unsafe_allow_html=True)
+        else:
+            st.info("Top holdings not available for this fund from the data source.")
+
+    # ── Sector Weightings ─────────────────────────────────────────────────────
+    with col_right:
+        st.markdown(section_header("Sector Allocation"), unsafe_allow_html=True)
+        sw = etf.get("sector_weightings")
+        if sw:
+            fig = go.Figure(go.Bar(
+                x=[v * 100 for v in sw.values()],
+                y=[k.replace("_", " ").title() for k in sw.keys()],
+                orientation="h",
+                marker_color="#5a9fd4",
+                text=[f"{v*100:.1f}%" for v in sw.values()],
+                textposition="auto",
+                hovertemplate="%{y}: %{x:.1f}%<extra></extra>",
+            ))
+            fig.update_layout(
+                height=max(220, len(sw) * 28 + 40),
+                template="plotly_dark",
+                paper_bgcolor="#0e1117", plot_bgcolor="#161922",
+                margin=dict(l=10, r=10, t=10, b=30),
+                xaxis=dict(showgrid=True, gridcolor="rgba(255,255,255,0.07)",
+                           ticksuffix="%", tickfont=dict(size=10)),
+                yaxis=dict(tickfont=dict(size=11), autorange="reversed"),
+                showlegend=False,
+            )
+            st.plotly_chart(fig, use_container_width=True, key=f"etf_sector_{ticker}")
+        else:
+            st.info("Sector weightings not available for this fund.")
+
+    # ── Asset Class Allocation ────────────────────────────────────────────────
+    ac = etf.get("asset_classes")
+    if ac and any(v > 0 for v in ac.values()):
+        st.markdown(section_header("Asset Class Allocation"), unsafe_allow_html=True)
+        items = [(k, v) for k, v in sorted(ac.items(), key=lambda x: -x[1]) if v > 0]
+        cols = st.columns(min(len(items), 5))
+        for col, (k, v) in zip(cols, items):
+            col.metric(k.replace("_", " ").title(), f"{v*100:.1f}%")
+
+    # ── Bond ratings (for fixed-income ETFs) ──────────────────────────────────
+    br = etf.get("bond_ratings")
+    if br and any(v > 0 for v in br.values()):
+        st.markdown(section_header("Credit Quality (Bond Ratings)"), unsafe_allow_html=True)
+        items = [(k, v) for k, v in sorted(br.items(), key=lambda x: -x[1]) if v > 0]
+        for k, v in items:
+            st.markdown(
+                f"<div style='display:flex;justify-content:space-between;"
+                f"padding:4px 0;border-bottom:1px solid #1e2130;font-size:12px'>"
+                f"<span style='color:#e2e8f0'>{k.upper()}</span>"
+                f"<span style='color:#5a9fd4;font-weight:600'>{v*100:.1f}%</span>"
+                f"</div>", unsafe_allow_html=True)
+
+    # ── Institutional holders of the ETF ──────────────────────────────────────
+    ih = etf.get("institutional_holders")
+    if isinstance(ih, pd.DataFrame) and not ih.empty:
+        st.markdown(section_header("Major Holders of this Fund"), unsafe_allow_html=True)
+        st.dataframe(ih, use_container_width=True, hide_index=True)
+
+    # ── Price chart vs benchmark ──────────────────────────────────────────────
+    st.divider()
+    info_for_chart = data.get("info", {}) if data else {}
+    if not info_for_chart.get("currency"):
+        info_for_chart["currency"] = ccy
+    try:
+        build_stock_benchmark_chart(ticker, data.get("hist_2y", pd.DataFrame()), info_for_chart)
+    except Exception:
+        pass
+
+    st.markdown("""
+> **Note on ETFs:** ETFs hold a basket of underlying securities and do not have
+> their own income statement, balance sheet, or cash flows. Standard equity
+> valuation (DCF, P/E vs peers, earnings) does not apply. The metrics above —
+> expense ratio, holdings, sector mix, and tracking performance — are what
+> matter for fund selection.
+>
+> **Data source:** Yahoo Finance funds data. Holdings and weightings reflect the
+> fund's most recent published disclosure and may lag the live portfolio.
+    """)
+
+
+def _safe_pct(v):
+    """Coerce a holdings weight to a 0-1 fraction. Handles 5.2, 0.052, '5.2%'."""
+    try:
+        if isinstance(v, str):
+            v = v.replace("%", "").strip()
+        f = float(v)
+        if np.isnan(f) or np.isinf(f):
+            return None
+        # If value looks like a percent (>1), convert to fraction
+        return f / 100 if f > 1 else f
+    except Exception:
+        return None
+
 
 # ─── Per-stock Deep Dive ──────────────────────────────────────────────────────
 
@@ -1904,13 +2838,29 @@ def render_stock_tab(ticker, data, dcf, fund, indicators, signals,
         beat_pct = sum(1 for s in past_surp if s > 0) / len(past_surp)
     eps_fs = "beat" if beat_pct and beat_pct > 0.6 else ("miss" if beat_pct and beat_pct < 0.4 else "inline")
 
-    tabs = st.tabs(["📋 Overview", "💰 Financials & DCF", "📊 Comparable Analysis",
-                     "📊 Valuation & Peers", "📈 Technical Analysis", "🎯 Sentiment",
-                     "📅 Earnings & Forecasts", "🏢 Intelligence", "📰 News",
-                     "🔮 Prediction", "🧠 Deep Analysis"])
+    tabs = st.tabs(["Overview", "Financials & DCF", "Comparable Analysis",
+                     "Valuation & Peers", "Technical", "Sentiment",
+                     "Earnings", "Intelligence", "News",
+                     "Prediction", "Deep Analysis"])
 
     # ── Overview ──────────────────────────────────────────────────────────────
     with tabs[0]:
+        # ── PDF export button ─────────────────────────────────────────────────
+        try:
+            from pdf_report import build_pdf_report
+            pdf_bytes = build_pdf_report(ticker, info, scoring, dcf,
+                                          valuation, sentiment, deep or {})
+            st.download_button(
+                "⬇  Download PDF Report",
+                data=pdf_bytes,
+                file_name=f"{ticker}_analysis_{__import__('datetime').date.today().isoformat()}.pdf",
+                mime="application/pdf",
+                key=f"pdf_dl_{ticker}",
+                use_container_width=False,
+            )
+        except Exception as _pdf_err:
+            st.caption(f"PDF export unavailable: {_pdf_err}")
+
         col1, col2, col3 = st.columns([1, 1, 1])
         with col1:
             sc = scoring["scores"]; comp = scoring["composite"]
@@ -2006,7 +2956,7 @@ def render_stock_tab(ticker, data, dcf, fund, indicators, signals,
             c2.metric("CapEx",          fmt(cfs.get("capex",[None])[0], prefix="$")        if cfs.get("capex")        else "—")
             c3.metric("Free Cash Flow", fmt(cfs.get("fcf",[None])[0], prefix="$")          if cfs.get("fcf")          else "—")
 
-        st.markdown(section_header("🧮 DCF Intrinsic Value — 4 Models"), unsafe_allow_html=True)
+        st.markdown(section_header("DCF Intrinsic Value — 4 Models"), unsafe_allow_html=True)
         wacc_c = dcf.get("wacc_components", {})
         if wacc_c:
             with st.expander("⚙️ WACC Components — hover ⓘ for explanations"):
@@ -2099,7 +3049,7 @@ def render_stock_tab(ticker, data, dcf, fund, indicators, signals,
             _native = info.get("currency", "USD")
             _disp   = st.session_state.get("display_ccy_code", _native)
             _rates  = st.session_state.get("fx_rates", {})
-            with st.expander("🌱 Path-to-Profitability DCF — Revenue-Based Model", expanded=True):
+            with st.expander("Path-to-Profitability DCF — Revenue-Based Model", expanded=True):
                 iv_p2p  = p2p["intrinsic_value"]
                 up_p2p  = (iv_p2p - cp) / cp if cp > 0 else 0
                 uc      = "#00C853" if up_p2p >= 0 else "#EF5350"
@@ -2141,7 +3091,7 @@ def render_stock_tab(ticker, data, dcf, fund, indicators, signals,
         # Sensitivity table
         sens = dcf.get("sensitivity", {})
         if sens:
-            with st.expander("🌡️ Sensitivity Analysis — WACC × Terminal Growth Rate", expanded=False):
+            with st.expander("Sensitivity Analysis — WACC × Terminal Growth Rate", expanded=False):
                 st.caption("Each cell = implied share price. "
                            "White box = base case. Green = above current, red = below.")
                 fig_sens = build_sensitivity_chart(sens, dcf.get("current_price",0) or cp, 
@@ -2152,13 +3102,20 @@ def render_stock_tab(ticker, data, dcf, fund, indicators, signals,
         # Growth rate sources
         gr = dcf.get("growth_rates", {})
         if gr:
-            with st.expander("📐 Growth Rate Assumptions", expanded=False):
+            sector = info.get("sector", "")
+            try:
+                from fundamental import get_sector_assumptions
+                sa = get_sector_assumptions(info)
+                sector_tg = sa.get("terminal_growth", 0.025)
+            except Exception:
+                sector_tg = 0.025
+            with st.expander("Growth Rate & Sector Assumptions", expanded=False):
                 st.markdown(f"""
 | Component | Value | Source |
 |---|---|---|
 | Stage 1 Growth (years 1–5) | **{gr.get('near', 0):.1%}** | Blended: historical UFCF + analyst estimates |
 | Stage 2 Growth (years 6–10) | **{gr.get('fade', 0):.1%}** | Fade = Stage 1 × 50% |
-| Terminal Growth (perpetuity) | **{gr.get('terminal', 0):.1%}** | ≈ long-run nominal GDP |
+| Terminal Growth (perpetuity) | **{gr.get('terminal', 0):.1%}** | Sector-specific ({sector or 'default'}): {sector_tg:.1%} |
 | Historical UFCF Growth | {gr.get('hist_ufcf', 0):.1%} | From financial statements |
 | Analyst EPS Growth | {f"{gr.get('analyst_eps'):.1%}" if gr.get('analyst_eps') else '—'} | Yahoo Finance consensus |
                 """)
@@ -2172,7 +3129,7 @@ def render_stock_tab(ticker, data, dcf, fund, indicators, signals,
                     "working capital noise and financing effects.", icon="📐")
 
         # What the numbers mean
-        with st.expander("📊 What do these DCF numbers actually mean?"):
+        with st.expander("What do these DCF numbers actually mean?"):
             st.markdown("""
 **Intrinsic Value** — What the model estimates each share is worth today, based on projected future cash flows discounted at the chosen rate. Compare this directly to the current stock price.
 
@@ -2341,7 +3298,11 @@ Each model answers a **different question**:
             for pt, pd_info in peer_data.items():
                 with st.container():
                     c1,c2,c3,c4,c5,c6,c7,c8 = st.columns([1.8, 1.5, 0.8, 0.8, 0.8, 0.8, 0.8, 1.2])
-                    c1.markdown(f"**{pt}**  ·  <span style='color:#94a3b8;font-size:11px'>{pd_info.get('name','')[:18]}</span>", unsafe_allow_html=True)
+                    pt_name = pd_info.get('name','') or TICKER_NAMES.get(pt,'')
+                    c1.markdown(
+                        ticker_tooltip(pt, pt_name, 'font-weight:700;font-size:14px;color:#e2e8f0') +
+                        f"  <span style='color:#94a3b8;font-size:11px'>{pt_name[:20]}</span>",
+                        unsafe_allow_html=True)
                     c2.markdown(f"<span style='font-size:11px;color:#94a3b8'>{pd_info.get('country','')}</span>  {fmt(pd_info.get('market_cap'), prefix='$')}", unsafe_allow_html=True)
                     c3.markdown(fmt(pd_info.get("pe_trailing"), dec=1))
                     c4.markdown(fmt(pd_info.get("pe_forward"), dec=1))
@@ -2771,7 +3732,7 @@ def render_prediction_tab(ticker, info, dcf, sentiment, scoring, signals, fund):
         st.plotly_chart(fig, use_container_width=True, key=f"pc_{ticker}_12")
 
     # ── Methodology breakdown ────────────────────────────────────────────────
-    st.markdown(section_header("📐 How this prediction is built"), unsafe_allow_html=True)
+    st.markdown(section_header("How this prediction is built"), unsafe_allow_html=True)
     c1, c2 = st.columns(2)
     with c1:
         st.markdown("**Inputs used:**")
@@ -2816,18 +3777,39 @@ def render_prediction_tab(ticker, info, dcf, sentiment, scoring, signals, fund):
 # ─── Summary Dashboard ───────────────────────────────────────────────────────
 
 def render_summary(results, rfr):
-    st.markdown("## 📊 Portfolio Summary")
+    st.markdown("## Portfolio Summary")
     valid = [(t, r) for t, r in results.items() if not r.get("error")]
     if not valid: return
 
     cols = st.columns(len(valid))
     for col, (ticker, r) in zip(cols, valid):
-        sc = r["scoring"]; cp = get_current_price(r["data"]["info"])
         with col:
+            # ETF results have no composite score — show a simpler card
+            if r.get("asset_type") == "ETF":
+                etf = r.get("etf", {})
+                price = etf.get("price", 0)
+                er    = etf.get("expense_ratio")
+                er_str = f"Expense {er:.2%}" if er is not None else "ETF"
+                etf_name = str(etf.get('name',''))
+                st.markdown(f"""
+                <div class='metric-card' style='text-align:center'>
+                  <div style='font-size:20px;font-weight:800;color:#fff'>{ticker_tooltip(ticker, etf_name, 'font-size:20px;font-weight:800;color:#fff')}</div>
+                  <div style='font-size:13px;color:#94a3b8;margin-bottom:4px'>{etf_name[:22]}</div>
+                  <div style='font-size:15px;font-weight:600;color:#5a9fd4;margin:8px 0'>ETF / Fund</div>
+                  <span class='signal-badge' style='background:#2d3748;color:#cbd5e1'>{er_str}</span>
+                  <div style='font-size:13px;color:#94a3b8;margin-top:6px'>{fmt(price, prefix="$")}</div>
+                </div>""", unsafe_allow_html=True)
+                continue
+
+            sc = r.get("scoring")
+            if not sc:
+                continue
+            cp = get_current_price(r["data"]["info"])
+            cname = r['data']['info'].get('shortName','') or TICKER_NAMES.get(ticker,'')
             st.markdown(f"""
             <div class='metric-card' style='text-align:center'>
-              <div style='font-size:20px;font-weight:800;color:#fff'>{ticker}</div>
-              <div style='font-size:13px;color:#94a3b8;margin-bottom:4px'>{r['data']['info'].get('shortName','')[:22]}</div>
+              <div style='font-size:20px;font-weight:800;color:#fff'>{ticker_tooltip(ticker, cname, 'font-size:20px;font-weight:800;color:#fff')}</div>
+              <div style='font-size:13px;color:#94a3b8;margin-bottom:4px'>{cname[:22]}</div>
               <div style='font-size:34px;font-weight:800'>{sc['composite']:.1f}</div>
               <span class='signal-badge' style='background:{sc["color"]};color:#fff'>{sc["signal"]}</span>
               <div style='font-size:13px;color:#94a3b8;margin-top:6px'>{fmt(cp, prefix="$")}</div>
@@ -2835,8 +3817,12 @@ def render_summary(results, rfr):
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # Metrics comparison
-    st.markdown("### 📐 Metrics Comparison")
+    # Metrics comparison (stocks only — ETFs excluded)
+    valid = [(t, r) for t, r in valid if r.get("asset_type") != "ETF"]
+    if not valid:
+        st.info("Metrics comparison applies to stocks. ETF details are shown in their individual tabs.")
+        return
+    st.markdown("### Metrics Comparison")
     metrics = [
         ("P/E (TTM)",       lambda i: i.get("trailingPE"),                         False),
         ("Forward P/E",     lambda i: i.get("forwardPE"),                           False),
@@ -2866,7 +3852,7 @@ def render_summary(results, rfr):
     st.dataframe(pd.DataFrame(rows).set_index("Metric"), use_container_width=True)
 
     # Score breakdown
-    st.markdown("### 🏆 Score Breakdown")
+    st.markdown("### Score Breakdown")
     sc_rows = []
     for t, r in valid:
         sc = r["scoring"]
@@ -2887,7 +3873,7 @@ def render_summary(results, rfr):
 # ─── Mobile / Deploy Guide ───────────────────────────────────────────────────
 
 def render_deploy_guide():
-    st.markdown("## 📱 Access on Phone / Web Deployment")
+    st.markdown("## Access on Phone / Web Deployment")
     st.markdown("Your Streamlit app runs in any browser — including on your phone. Here are your options:")
 
     col1, col2 = st.columns(2)
@@ -2974,6 +3960,27 @@ def render_deploy_guide():
 # ─── Main ────────────────────────────────────────────────────────────────────
 
 def main():
+    # ── Mobile bottom-nav: read query param navigation ────────────────────────
+    try:
+        qp_nav = st.query_params.get("nav")
+        if qp_nav in ("analyzer", "screener", "portfolio"):
+            st.session_state["nav_page"] = qp_nav
+            st.query_params.clear()
+    except Exception:
+        pass
+
+    # ── Restore watchlist from browser localStorage (via query param) ─────────
+    try:
+        wl_param = st.query_params.get("wl")
+        if wl_param and not st.session_state.get("watchlist"):
+            import json as _json, urllib.parse as _up
+            restored = _json.loads(_up.unquote(wl_param))
+            if isinstance(restored, list):
+                st.session_state["watchlist"] = [str(t).upper() for t in restored if t]
+            st.query_params.pop("wl", None)
+    except Exception:
+        pass
+
     # ── Process pending ticker additions BEFORE any widgets render ────────────
     # Handles: peer table "Analyze" button, and any other programmatic adds
     # ── Process pending slot clear BEFORE widgets render ─────────────────────
@@ -3002,7 +4009,7 @@ def main():
         st.session_state["nav_page"]     = "analyzer"
 
     with st.sidebar:
-        st.markdown("# 📈 Stock Analyzer")
+        st.markdown("# Stock Analyzer")
 
         # ── Page navigation ───────────────────────────────────────────────────
         # Resolve current page — force_nav takes priority over radio
@@ -3015,7 +4022,7 @@ def main():
         _idx_map  = {"analyzer": 0, "screener": 1, "portfolio": 2}
         nav_sel   = st.radio(
             "Navigation",
-            options=["📈 Analyzer", "🔍 Screener", "💼 Portfolio"],
+            options=["Analyzer", "Screener", "Portfolio"],
             index=_idx_map.get(nav_page, 0),
             horizontal=True,
             key="nav_radio",
@@ -3118,6 +4125,9 @@ def main():
                 ticker_inputs.append(v)
         st.session_state["ticker_slots"] = new_slots
 
+        # ── Watchlist ─────────────────────────────────────────────────────────
+        render_watchlist_sidebar(ticker_inputs)
+
         st.markdown("---")
         fixed_rate = st.slider("Fixed Discount Rate (Model 3)", 4.0, 20.0, 10.0, 0.5, format="%.1f%%") / 100
 
@@ -3158,6 +4168,9 @@ def main():
         st.session_state["show_deploy"] = True
 
     # ── Page routing ─────────────────────────────────────────────────────────
+    _active_page = st.session_state.get("nav_page", "analyzer")
+    render_mobile_bottom_nav(_active_page)
+
     if st.session_state.get("nav_page") == "screener":
         render_screener_page()
         return
@@ -3173,21 +4186,46 @@ def main():
         return
 
     if not ticker_inputs and "results" not in st.session_state:
-        st.markdown("# 📈 Stock Analyzer")
+        # ── Landing page: ticker tape + indices + intro ───────────────────────
+        try:
+            tape_quotes = fetch_tape_quotes()
+            render_ticker_tape(tape_quotes)
+        except Exception:
+            pass
+
         st.markdown(
-            "Comprehensive equity analysis for stocks across **30+ global exchanges**. "
-            "Enter up to **5 tickers** in the sidebar and click **Analyze**.\n\n"
-            "**Features:**\n"
-            "- 🌍 **International peers** — auto-detected from US, Canada, Europe, Japan, Korea, China\n"
-            "- 🧮 **4 DCF Models** — WACC, CAPM, Fixed Rate, Two-Stage FCF (side-by-side)\n"
-            "- 📈 **All technical indicators** — each with ✅/🔴 signal feedback\n"
-            "- ℹ️ **Hover tooltips** — click ⓘ next to any metric for definition + formula\n"
-            "- 📅 **Earnings calendar** — dates, EPS estimate vs actual, beat/miss history\n"
-            "- 📊 **Forecast tracking** — EPS revision trends, estimate vs consensus\n"
-            "- 📱 **Phone access** — deploy guide included\n\n"
-            "**European tickers:** ASML.AS · SHEL.L · SAP.DE · TTE.PA · NOVN.SW · 0700.HK · 005930.KS"
-        )
-        st.info("👈 Enter tickers in the sidebar, then click **Analyze**.")
+            "<h1 style='font-size:32px;font-weight:900;letter-spacing:-0.04em;"
+            "color:#f1f5f9;margin:20px 0 4px'>Stock Analyzer</h1>"
+            "<p style='color:#64748b;font-size:15px;margin:0 0 24px'>"
+            "Professional equity analysis across 30+ global exchanges.</p>",
+            unsafe_allow_html=True)
+
+        # Live indices
+        try:
+            with st.spinner("Loading market data…"):
+                idx_data = fetch_index_data()
+            render_indices(idx_data)
+        except Exception:
+            pass
+
+        # Market movers
+        try:
+            render_market_movers()
+        except Exception:
+            pass
+
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        # Quick-start guide
+        with st.expander("Getting started", expanded=False):
+            st.markdown("""
+**Enter any of these in the sidebar:**
+- US tickers: `NVDA`, `AAPL`, `MSFT`
+- European: `ASML.AS` (Netherlands) · `SHEL.L` (UK) · `SAP.DE` (Germany)
+- Asian: `7203.T` (Toyota) · `005930.KS` (Samsung) · `0700.HK` (Tencent)
+- ETFs: `SPY`, `QQQ`, `IWDA.AS`
+- Up to **5 tickers** at once for side-by-side comparison
+            """)
         return
 
     auto_analyze = st.session_state.pop("auto_analyze", False)
@@ -3215,6 +4253,22 @@ def main():
                     results[ticker] = {"error": f"No data returned for '{ticker}'. Check the ticker symbol."}
                     continue
 
+                # ── Asset-type routing: ETFs are not operating companies ──────
+                qt = str(info.get("quoteType", "")).upper()
+                if qt in ("ETF", "MUTUALFUND"):
+                    try:
+                        etf_info = fetch_etf_data(ticker)
+                        ind      = calculate_indicators(data.get("hist_2y", pd.DataFrame()))
+                        results[ticker] = {
+                            "asset_type": "ETF",
+                            "data":       data,
+                            "etf":        etf_info,
+                            "indicators": ind,
+                        }
+                    except Exception as _err:
+                        results[ticker] = {"error": f"{ticker} (ETF): {_err}"}
+                    continue
+
                 try:
                     peers_list = get_peers(ticker, info, peer_overrides.get(ticker, ""))
                     peer_data  = fetch_peer_metrics(tuple(peers_list)) if peers_list else {}
@@ -3239,6 +4293,11 @@ def main():
                     scoring["sent_msgs"] = smsgs
 
                     deep = run_deep_analysis(data, info)
+                    # Cache news for SWOT headline analysis
+                    try:
+                        st.session_state[f"news_{ticker}"] = data.get("news", [])
+                    except Exception:
+                        pass
                     results[ticker] = {
                         "data": data, "peers": peers_list, "peer_data": peer_data,
                         "fund": fund, "dcf": dcf, "indicators": ind, "signals": sigs,
@@ -3278,7 +4337,10 @@ def main():
     valid = {t: r for t, r in results.items() if not r.get("error")}
     if not valid: return
 
-    tab_labels = ["📊 Summary"] + [f"📈 {t}" for t in valid]
+    tab_labels = ["Summary"] + [
+        f"{t}" + ("  (ETF)" if valid[t].get("asset_type") == "ETF" else "")
+        for t in valid
+    ]
     top_tabs   = st.tabs(tab_labels)
 
     with top_tabs[0]:
@@ -3286,13 +4348,17 @@ def main():
 
     for i, (ticker, r) in enumerate(valid.items()):
         with top_tabs[i + 1]:
-            render_stock_tab(
-                ticker=ticker, data=r["data"], dcf=r["dcf"], fund=r["fund"],
-                indicators=r["indicators"], signals=r["signals"], valuation=r["valuation"],
-                comparison=r["comparison"], sentiment=r["sentiment"],
-                scoring=r["scoring"], peer_data=r["peer_data"],
-                deep=r.get("deep", {}),
-            )
+            if r.get("asset_type") == "ETF":
+                render_etf_tab(ticker, r.get("etf", {}), r.get("data", {}),
+                               r.get("indicators"))
+            else:
+                render_stock_tab(
+                    ticker=ticker, data=r["data"], dcf=r["dcf"], fund=r["fund"],
+                    indicators=r["indicators"], signals=r["signals"], valuation=r["valuation"],
+                    comparison=r["comparison"], sentiment=r["sentiment"],
+                    scoring=r["scoring"], peer_data=r["peer_data"],
+                    deep=r.get("deep", {}),
+                )
 
 
 if __name__ == "__main__":

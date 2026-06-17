@@ -1,3 +1,4 @@
+from tooltips import ticker_tooltip
 """
 screener_ui.py — Screener page UI.
 
@@ -13,6 +14,7 @@ from screener import (
     run_screener, ScreenerCriteria, get_preset_criteria,
     SECTORS, REGIONS, CONTINENTS, MARKET_CAP_BUCKETS,
     INDUSTRIES_BY_SECTOR, _classify_stock_type,
+    get_ai_supply_chain_info, AI_SUPPLY_CHAIN_UNIVERSE,
 )
 from currency import CURRENCY_SYMBOLS, fmt_currency
 
@@ -44,14 +46,14 @@ STOCK_TYPE_COLORS = {
 }
 
 STOCK_TYPE_ICONS = {
-    "Growth":          "🚀",
-    "GARP":            "⚖️",
-    "Deep Value":      "💎",
-    "Value":           "🏛️",
-    "Dividend":        "💰",
-    "Speculative":     "⚡",
-    "Small-Cap Growth":"🌱",
-    "Blend":           "🔵",
+    "Growth":          "",
+    "GARP":            "",
+    "Deep Value":      "",
+    "Value":           "",
+    "Dividend":        "",
+    "Speculative":     "",
+    "Small-Cap Growth":"",
+    "Blend":           "",
 }
 
 SIGNAL_COLORS = {
@@ -74,7 +76,7 @@ def score_badge(s, size=13):
 
 def type_badge(stock_type):
     c = STOCK_TYPE_COLORS.get(stock_type, "#90CAF9")
-    ic = STOCK_TYPE_ICONS.get(stock_type, "🔵")
+    ic = STOCK_TYPE_ICONS.get(stock_type, "")
     return (f"<span style='background:{c}22;color:{c};border:1px solid {c}44;"
             f"border-radius:8px;padding:2px 8px;font-size:11px;font-weight:600'>{ic} {stock_type}</span>")
 
@@ -94,11 +96,12 @@ def render_criteria_panel() -> ScreenerCriteria:
     criteria = ScreenerCriteria()
 
     # ── Preset buttons ────────────────────────────────────────────────────────
-    st.markdown("#### ⚡ Quick Presets")
+    st.markdown("#### Quick Presets")
     presets = [
-        "🚀 High Growth + High Upside",
-        "📈 Revenue Accelerators",
-        "🎯 Analyst Favourites",
+        "AI Supply Chain",
+        "High Growth + High Upside",
+        "Revenue Accelerators",
+        "Analyst Favourites",
         "High Growth Tech",
         "Dividend Income",
         "European Value",
@@ -108,10 +111,10 @@ def render_criteria_panel() -> ScreenerCriteria:
         "Healthcare Innovation",
         "High Conviction (Global)",
     ]
-    # 3 columns for presets
-    preset_cols = st.columns(3)
+    # 2 columns: wider buttons, better mobile readability
+    preset_cols = st.columns(2)
     for i, p in enumerate(presets):
-        if preset_cols[i % 3].button(p, key=f"preset_{p}", use_container_width=True):
+        if preset_cols[i % 2].button(p, key=f"preset_{p}", use_container_width=True):
             st.session_state["screener_preset"] = p
             st.rerun()
 
@@ -120,7 +123,7 @@ def render_criteria_panel() -> ScreenerCriteria:
     if active_preset:
         preset_c = get_preset_criteria(active_preset)
         st.success(f"Preset loaded: **{active_preset}** — adjust below or click Run")
-        if st.button("✕ Clear preset", key="clear_preset"):
+        if st.button("Clear preset", key="clear_preset"):
             st.session_state.pop("screener_preset", None)
             st.rerun()
         criteria = preset_c
@@ -309,11 +312,37 @@ def render_results(results: list):
     disp_ccy = st.session_state.get("display_ccy_code", "USD")
     rates    = st.session_state.get("fx_rates", {})
 
-    st.markdown(f"### Found **{len(results)}** matching stocks")
-    st.caption("Click **▶ Analyze** to open a full analysis in the Analyzer tab.")
+    st.markdown(f"### Found {len(results)} matching stocks")
+    st.caption("Select Analyze to open a full analysis in the Analyzer tab.")
+
+    # ── AI Supply Chain layer breakdown (only for that preset) ────────────────
+    active_preset = st.session_state.get("screener_preset")
+    is_ai_chain   = active_preset == "AI Supply Chain"
+    if is_ai_chain:
+        result_tickers = [r[0] for r in results]
+        layers = {}
+        for t in result_tickers:
+            info = get_ai_supply_chain_info(t)
+            if info:
+                layers.setdefault(info["layer"], []).append(t)
+        if layers:
+            st.markdown(
+                "<div style='background:#1a1d2e;border:1px solid #2d3748;"
+                "border-radius:10px;padding:14px 18px;margin:8px 0 16px'>"
+                "<div style='font-size:13px;font-weight:700;color:#e2e8f0;"
+                "margin-bottom:8px'>Supply Chain Coverage</div>",
+                unsafe_allow_html=True)
+            for layer, ts in sorted(layers.items(), key=lambda x: -len(x[1])):
+                st.markdown(
+                    f"<div style='font-size:12px;color:#a0aec0;padding:3px 0;"
+                    f"border-bottom:1px solid #232838'>"
+                    f"<span style='color:#e2e8f0;font-weight:600'>{layer}</span>"
+                    f"<span style='color:#718096'> — {', '.join(ts)}</span></div>",
+                    unsafe_allow_html=True)
+            st.markdown("</div>", unsafe_allow_html=True)
 
     # Summary cards (top 3)
-    st.markdown("#### 🏆 Top Picks")
+    st.markdown("#### Top Picks")
     top_cols = st.columns(min(3, len(results)))
     for i, result_row in enumerate(results[:3]):
         ticker, m, score, stype, upside = result_row[0], result_row[1], result_row[2], result_row[3], result_row[4]
@@ -325,13 +354,13 @@ def render_results(results: list):
             st.markdown(f"""
             <div style='background:#1a1d2e;border:1px solid #3a3f5c;border-radius:10px;
                          padding:14px 16px;text-align:center'>
-              <div style='font-size:18px;font-weight:800;color:#e2e8f0'>{ticker}</div>
+              <div style='font-size:18px;font-weight:800;color:#e2e8f0'>{ticker_tooltip(ticker, m.get('name',''), 'font-size:18px;font-weight:800;color:#e2e8f0')}</div>
               <div style='font-size:11px;color:#718096;margin:2px 0'>{m.get('name','')[:22]}</div>
               <div style='font-size:24px;font-weight:800;color:{sc};margin:6px 0'>{score:.1f}</div>
               <div style='margin:4px 0'>
                 <span style='background:{tc}22;color:{tc};border:1px solid {tc}44;
                   border-radius:8px;padding:2px 8px;font-size:10px;font-weight:600'>
-                  {STOCK_TYPE_ICONS.get(stype,"🔵")} {stype}
+                  {stype}
                 </span>
               </div>
               <div style='font-size:13px;color:#e2e8f0;margin-top:6px'>{cp_str}</div>
@@ -344,7 +373,7 @@ def render_results(results: list):
     st.markdown("---")
 
     # ── Full results table ────────────────────────────────────────────────────
-    st.markdown("#### 📋 All Results")
+    st.markdown("#### All Results")
 
     # Column headers
     hcols = st.columns([1.4, 1.6, 0.7, 0.7, 0.7, 0.7, 0.7, 0.7, 0.7, 0.7, 1.1])
@@ -365,18 +394,23 @@ def render_results(results: list):
 
         c1,c2,c3,c4,c5,c6,c7,c8,c9,c10,c11 = st.columns([1.4,1.6,0.7,0.7,0.7,0.7,0.7,0.7,0.7,0.7,1.1])
 
+        # AI supply chain thesis (if applicable)
+        chain_info = get_ai_supply_chain_info(ticker) if is_ai_chain else {}
+        chain_layer = chain_info.get("layer","")
         c1.markdown(
-            f"<div style='font-size:13px;font-weight:700;color:#e2e8f0'>{ticker}</div>"
+            f"<div style='font-size:13px;font-weight:700;color:#e2e8f0'>{ticker_tooltip(ticker, m.get('name',''), 'font-size:13px;font-weight:700;color:#e2e8f0')}</div>"
             f"<div style='font-size:10px;color:#718096'>{m.get('country','')}"
-            f"  ·  {m.get('sector','')[:14]}</div>",
+            f"  ·  {m.get('sector','')[:14]}</div>"
+            + (f"<div style='font-size:9px;color:#5a9fd4;margin-top:1px'>{chain_layer}</div>"
+               if chain_layer else ""),
             unsafe_allow_html=True
         )
         tc = STOCK_TYPE_COLORS.get(stype, "#90CAF9")
-        ic = STOCK_TYPE_ICONS.get(stype, "🔵")
+        ic = STOCK_TYPE_ICONS.get(stype, "")
         c2.markdown(
             f"<div style='font-size:11px;color:#e2e8f0'>{m.get('name','')[:20]}</div>"
             f"<span style='background:{tc}22;color:{tc};border:1px solid {tc}33;"
-            f"border-radius:6px;padding:1px 6px;font-size:10px'>{ic} {stype}</span>",
+            f"border-radius:6px;padding:1px 6px;font-size:10px'>{(ic + ' ') if ic else ''}{stype}</span>",
             unsafe_allow_html=True
         )
         sc = score_color(score)
@@ -412,6 +446,14 @@ def render_results(results: list):
         if c11.button("▶ Analyze", key=f"res_analyze_{ticker}_{rank}",
                       use_container_width=True):
             _send_to_analyzer(ticker)
+
+        # Investment thesis line for AI supply chain names
+        if is_ai_chain and chain_info.get("thesis"):
+            st.markdown(
+                f"<div style='font-size:11px;color:#94a3b8;padding:0 0 4px 4px;"
+                f"margin-top:-6px;font-style:italic'>"
+                f"{chain_info['thesis']}</div>",
+                unsafe_allow_html=True)
 
         st.divider()
 
@@ -563,6 +605,137 @@ def render_results_chart(results: list):
 
 # ─── Main screener page ───────────────────────────────────────────────────────
 
+def render_congress_screener():
+    """Screener mode showing recent U.S. Congress stock trades."""
+    import streamlit as st
+
+    st.markdown(
+        "<div style='font-size:13px;color:#94a3b8;margin-bottom:12px'>"
+        "Recent stock transactions disclosed by members of the U.S. Congress "
+        "under the STOCK Act. Data reflects official House &amp; Senate financial "
+        "disclosure filings. Click any ticker to run a full analysis."
+        "</div>", unsafe_allow_html=True)
+
+    c1, c2, c3 = st.columns([1.2, 1.2, 1])
+    with c1:
+        window = st.selectbox("Time window",
+                              ["Last 30 days", "Last 90 days", "Last 180 days", "Last 365 days"],
+                              index=1, key="congress_window")
+        days_map = {"Last 30 days": 30, "Last 90 days": 90,
+                    "Last 180 days": 180, "Last 365 days": 365}
+        days_back = days_map[window]
+    with c2:
+        view_mode = st.selectbox("View",
+                                 ["By ticker (most traded)", "Chronological (all trades)"],
+                                 index=0, key="congress_view")
+    with c3:
+        chamber_filter = st.selectbox("Chamber", ["All", "House", "Senate"],
+                                      index=0, key="congress_chamber")
+
+    @st.cache_data(ttl=3600, show_spinner=False)
+    def _load(days):
+        from congress_trades import fetch_congress_trades
+        return fetch_congress_trades(days_back=days)
+
+    with st.spinner("Loading congressional disclosures…"):
+        try:
+            trades = _load(days_back)
+        except Exception as e:
+            st.error(f"Could not load congressional trade data: {e}")
+            return
+
+    if chamber_filter != "All":
+        trades = [t for t in trades if t.get("chamber") == chamber_filter]
+
+    if not trades:
+        st.warning(
+            "No congressional trades available right now. The public disclosure "
+            "feed may be temporarily unavailable — try again shortly, or widen the time window.")
+        return
+
+    st.caption(f"{len(trades)} disclosed transactions in {window.lower()}"
+               + (f" · {chamber_filter}" if chamber_filter != 'All' else ""))
+
+    if view_mode == "By ticker (most traded)":
+        from congress_trades import aggregate_by_ticker
+        agg = aggregate_by_ticker(trades)
+
+        # Header row
+        h = st.columns([1.2, 2.4, 1, 0.9, 0.9, 1.3, 1.1])
+        for col, txt in zip(h, ["Ticker", "Company", "Trades", "Buys", "Sells",
+                                 "Latest", "Action"]):
+            col.markdown(f"<div style='font-size:11px;font-weight:700;color:#64748b;"
+                         f"text-transform:uppercase;letter-spacing:0.05em;"
+                         f"padding-bottom:6px;border-bottom:1px solid #1e2433'>{txt}</div>",
+                         unsafe_allow_html=True)
+
+        for rec in agg[:40]:
+            c = st.columns([1.2, 2.4, 1, 0.9, 0.9, 1.3, 1.1])
+            bias_color = ("#10b981" if rec["net_bias"] == "Buying" else
+                          "#ef4444" if rec["net_bias"] == "Selling" else "#94a3b8")
+            c[0].markdown(
+                ticker_tooltip(rec["ticker"], rec["company"],
+                               "font-size:14px;font-weight:700;color:#e2e8f0"),
+                unsafe_allow_html=True)
+            c[1].markdown(
+                f"<div style='font-size:12px;color:#94a3b8'>{rec['company'][:32]}</div>"
+                f"<div style='font-size:10px;color:#64748b'>{rec['n_members']} member(s)</div>",
+                unsafe_allow_html=True)
+            c[2].markdown(
+                f"<span style='font-size:14px;font-weight:700;color:{bias_color}'>"
+                f"{rec['total_trades']}</span>", unsafe_allow_html=True)
+            c[3].markdown(f"<span style='font-size:12px;color:#10b981'>{rec['buys']}</span>",
+                          unsafe_allow_html=True)
+            c[4].markdown(f"<span style='font-size:12px;color:#ef4444'>{rec['sells']}</span>",
+                          unsafe_allow_html=True)
+            c[5].markdown(f"<span style='font-size:11px;color:#94a3b8'>{rec['latest_str']}</span>",
+                          unsafe_allow_html=True)
+            if c[6].button("Analyze", key=f"cong_{rec['ticker']}", use_container_width=True):
+                _send_to_analyzer(rec["ticker"])
+            st.markdown("<div style='border-bottom:1px solid #161b26'></div>",
+                        unsafe_allow_html=True)
+
+    else:
+        # Chronological view
+        h = st.columns([1.1, 1.9, 1.8, 0.8, 1.2, 1])
+        for col, txt in zip(h, ["Ticker", "Member", "Company", "Type", "Date", "Action"]):
+            col.markdown(f"<div style='font-size:11px;font-weight:700;color:#64748b;"
+                         f"text-transform:uppercase;letter-spacing:0.05em;"
+                         f"padding-bottom:6px;border-bottom:1px solid #1e2433'>{txt}</div>",
+                         unsafe_allow_html=True)
+
+        for t in trades[:60]:
+            c = st.columns([1.1, 1.9, 1.8, 0.8, 1.2, 1])
+            type_color = ("#10b981" if t["type"] == "Buy" else
+                          "#ef4444" if t["type"] == "Sell" else "#94a3b8")
+            c[0].markdown(
+                ticker_tooltip(t["ticker"], t["company"],
+                               "font-size:13px;font-weight:700;color:#e2e8f0"),
+                unsafe_allow_html=True)
+            c[1].markdown(
+                f"<div style='font-size:11px;color:#cbd5e1'>{t['member'][:24]}</div>"
+                f"<div style='font-size:9px;color:#64748b'>{t['chamber']}</div>",
+                unsafe_allow_html=True)
+            c[2].markdown(f"<span style='font-size:11px;color:#94a3b8'>{t['company'][:28]}</span>",
+                          unsafe_allow_html=True)
+            c[3].markdown(f"<span style='font-size:11px;font-weight:600;color:{type_color}'>"
+                          f"{t['type']}</span>", unsafe_allow_html=True)
+            c[4].markdown(f"<span style='font-size:11px;color:#94a3b8'>{t['txn_date_str']}</span>",
+                          unsafe_allow_html=True)
+            if c[5].button("Analyze", key=f"congc_{t['ticker']}_{t['txn_date_str']}_{hash(t['member'])%10000}",
+                           use_container_width=True):
+                _send_to_analyzer(t["ticker"])
+            st.markdown("<div style='border-bottom:1px solid #161b26'></div>",
+                        unsafe_allow_html=True)
+
+    st.markdown(
+        "<div style='font-size:10px;color:#475569;margin-top:16px'>"
+        "Source: U.S. House &amp; Senate STOCK Act disclosure filings (public data). "
+        "Disclosures can lag transactions by up to 45 days. "
+        "This is informational only and not investment advice.</div>",
+        unsafe_allow_html=True)
+
+
 def render_screener_page():
     """Entry point: renders the full screener page."""
 
@@ -570,13 +743,22 @@ def render_screener_page():
     <div style='background:linear-gradient(135deg,#1a1d2e,#0d1117);
                 border:1px solid #3a3f5c;border-radius:12px;
                 padding:20px 24px;margin-bottom:20px'>
-      <div style='font-size:22px;font-weight:800;color:#e2e8f0'>🔍 Stock Screener</div>
+      <div style='font-size:22px;font-weight:800;color:#e2e8f0'>Stock Screener</div>
       <div style='font-size:13px;color:#718096;margin-top:4px'>
         Define your criteria → let the system find matching stocks globally →
         click any result to run a full analysis.
       </div>
     </div>
     """, unsafe_allow_html=True)
+
+    # Two screener modes: standard filter-based, and congressional trades
+    mode = st.radio("Screener mode", ["Filter Screener", "Congress Trades"],
+                    horizontal=True, key="screener_mode",
+                    label_visibility="collapsed")
+
+    if mode == "Congress Trades":
+        render_congress_screener()
+        return
 
     # ── Layout: criteria left, results right ──────────────────────────────────
     left, right = st.columns([1, 2.5], gap="large")

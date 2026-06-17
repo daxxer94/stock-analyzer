@@ -183,6 +183,9 @@ class ScreenerCriteria:
         self.min_score: float = 0.0
         # Result count
         self.max_results: int = 50
+        # Custom universe (skips EquityQuery, fetches these tickers directly)
+        self.use_custom_universe: bool = False
+        self.custom_tickers: list      = []
 
 
 # ─── Core screener logic ──────────────────────────────────────────────────────
@@ -631,31 +634,37 @@ def run_screener(criteria: ScreenerCriteria, progress_cb=None) -> list:
     Runs two Yahoo screener passes (large-cap + small/mid) for broader coverage.
     Returns list of (ticker, metrics, score, stock_type, upside) tuples.
     """
-    query = _build_equity_query(criteria)
-
-    if progress_cb:
-        progress_cb(0, 100, "Querying Yahoo Finance screener…")
-
-    # Two-pass query: sorted by mktcap desc then asc for full size coverage
-    candidates_raw = []
-    seen_syms = set()
-
-    for sort_asc in [False, True]:
-        try:
-            batch = _retry(lambda sa=sort_asc: yf.screen(
-                query, sortField="intradaymarketcap", sortAsc=sa, size=100
-            ))
-            if batch and "quotes" in batch:
-                for q in batch.get("quotes", []):
-                    sym = q.get("symbol", "")
-                    if sym and sym not in seen_syms:
-                        seen_syms.add(sym)
-                        candidates_raw.append(sym)
-        except Exception:
-            pass
+    # ── Custom universe path: skip EquityQuery, use curated tickers ─────────
+    if getattr(criteria, "use_custom_universe", False) and criteria.custom_tickers:
+        candidates_raw = list(criteria.custom_tickers)
         if progress_cb:
-            progress_cb(5, 100, f"Pass {'1' if not sort_asc else '2'}: {len(candidates_raw)} candidates so far…")
-        time.sleep(0.6)
+            progress_cb(5, 100, f"Using curated universe: {len(candidates_raw)} tickers")
+    else:
+        query = _build_equity_query(criteria)
+
+        if progress_cb:
+            progress_cb(0, 100, "Querying Yahoo Finance screener…")
+
+        # Two-pass query: sorted by mktcap desc then asc for full size coverage
+        candidates_raw = []
+        seen_syms = set()
+
+        for sort_asc in [False, True]:
+            try:
+                batch = _retry(lambda sa=sort_asc: yf.screen(
+                    query, sortField="intradaymarketcap", sortAsc=sa, size=100
+                ))
+                if batch and "quotes" in batch:
+                    for q in batch.get("quotes", []):
+                        sym = q.get("symbol", "")
+                        if sym and sym not in seen_syms:
+                            seen_syms.add(sym)
+                            candidates_raw.append(sym)
+            except Exception:
+                pass
+            if progress_cb:
+                progress_cb(5, 100, f"Pass {'1' if not sort_asc else '2'}: {len(candidates_raw)} candidates so far…")
+            time.sleep(0.6)
 
     if not candidates_raw:
         return []
@@ -750,7 +759,7 @@ def get_preset_criteria(preset_name: str) -> ScreenerCriteria:
         c.min_score     = 7.0
         c.max_results   = 20
 
-    elif preset_name == "🚀 High Growth + High Upside":
+    elif preset_name == "High Growth + High Upside":
         # Pure momentum: high revenue growth + large analyst upside
         c.min_rev_growth = 0.15
         c.min_eps_growth = 0.10
@@ -760,14 +769,14 @@ def get_preset_criteria(preset_name: str) -> ScreenerCriteria:
         c.max_results    = 30
         c.stock_types    = ["Growth", "GARP", "Small-Cap Growth"]
 
-    elif preset_name == "📈 Revenue Accelerators":
+    elif preset_name == "Revenue Accelerators":
         # Top-line acceleration: fastest-growing companies regardless of profitability
         c.min_rev_growth  = 0.20
         c.max_fwd_pe      = 100
         c.min_gross_margin = 0.30   # at least some unit economics
         c.max_results     = 25
 
-    elif preset_name == "🎯 Analyst Favourites":
+    elif preset_name == "Analyst Favourites":
         # Stocks with high analyst conviction and meaningful upside targets
         c.max_pe         = 50
         c.min_rev_growth = 0.05
@@ -775,4 +784,73 @@ def get_preset_criteria(preset_name: str) -> ScreenerCriteria:
         c.max_results    = 25
         # Will rank by analyst upside within scoring
 
+    elif preset_name == "AI Supply Chain":
+        # Curated universe: every layer of the AI hardware stack.
+        # Marked with use_custom_universe so the screener skips EquityQuery
+        # and directly fetches the curated ticker list.
+        c.use_custom_universe = True
+        c.custom_tickers      = get_ai_supply_chain_tickers()
+        c.min_score           = 0.0   # show all; let the user judge
+        c.max_results         = 35
+
     return c
+
+
+# ─── AI Hardware Supply Chain Universe ───────────────────────────────────────
+# Curated small/mid-cap names across every layer of the AI hardware stack.
+# Based on supply chain research: packaging/test (HBM bottleneck), optical
+# networking, power & cooling, memory, specialty semis, and equipment.
+
+AI_SUPPLY_CHAIN_UNIVERSE = {
+    # Layer 1: Advanced packaging, test & inspection (HBM picks-and-shovels)
+    "CAMT":  {"layer": "Packaging, Test & Inspection", "thesis": "3D metrology for HBM stacks; record orders from tier-1 OSATs and HBM makers"},
+    "AEHR":  {"layer": "Packaging, Test & Inspection", "thesis": "Burn-in test systems for AI chips; hyperscaler follow-on orders"},
+    "FORM":  {"layer": "Packaging, Test & Inspection", "thesis": "Probe cards for advanced-node and HBM wafer test"},
+    "NVMI":  {"layer": "Packaging, Test & Inspection", "thesis": "Metrology for advanced nodes and heterogeneous integration"},
+    "ICHR":  {"layer": "Packaging, Test & Inspection", "thesis": "Fluid delivery subsystems for fab equipment"},
+    "ACMR":  {"layer": "Packaging, Test & Inspection", "thesis": "Wafer cleaning equipment; China + advanced packaging exposure"},
+    "UCTT":  {"layer": "Packaging, Test & Inspection", "thesis": "Critical subsystems for semicap equipment OEMs"},
+    "SKYT":  {"layer": "Specialty Foundry",            "thesis": "US-based specialty foundry; domestic production demand"},
+
+    # Layer 2: Optical networking / co-packaged optics
+    "AAOI":  {"layer": "Optical & Networking",  "thesis": "Optical transceivers for hyperscale datacenters; 800G ramp"},
+    "LITE":  {"layer": "Optical & Networking",  "thesis": "Optical components; co-packaged optics and telecom recovery"},
+    "POET":  {"layer": "Optical & Networking",  "thesis": "Optical interposer platform for co-packaged optics"},
+    "CRDO":  {"layer": "Optical & Networking",  "thesis": "Active electrical cables and SerDes for AI clusters"},
+    "ALAB":  {"layer": "Optical & Networking",  "thesis": "PCIe/CXL connectivity silicon for AI servers"},
+    "PENG":  {"layer": "Optical & Networking",  "thesis": "Edge networking and embedded compute"},
+
+    # Layer 3: Power & cooling infrastructure
+    "VRT":   {"layer": "Power & Cooling",  "thesis": "Datacenter power and liquid cooling; large AI backlog"},
+    "MOD":   {"layer": "Power & Cooling",  "thesis": "Liquid cooling systems; datacenter segment growth"},
+    "NVT":   {"layer": "Power & Cooling",  "thesis": "Electrical connection and protection for datacenters"},
+    "POWL":  {"layer": "Power & Cooling",  "thesis": "Electrical distribution equipment; datacenter and utility capex"},
+    "AMSC":  {"layer": "Power & Cooling",  "thesis": "Grid interconnection systems; power infrastructure buildout"},
+    "BE":    {"layer": "Power & Cooling",  "thesis": "Fuel cells for datacenter primary power"},
+
+    # Layer 4: Memory & storage supply chain
+    "SIMO":  {"layer": "Memory & Storage", "thesis": "NAND controllers; enterprise SSD demand from AI servers"},
+    "SMCI":  {"layer": "Server & Systems", "thesis": "AI server assembly; direct-liquid-cooling rack systems"},
+    "PSTG":  {"layer": "Memory & Storage", "thesis": "All-flash arrays; AI training data pipelines"},
+
+    # Layer 5: Specialty semiconductors & IP
+    "RMBS":  {"layer": "Specialty Semis & IP", "thesis": "Memory interface chips for DDR5/HBM; silicon IP royalties"},
+    "MTSI":  {"layer": "Specialty Semis & IP", "thesis": "RF/analog semis; datacenter optical drivers"},
+    "SITM":  {"layer": "Specialty Semis & IP", "thesis": "Precision timing chips; networking clock trees"},
+    "SLAB":  {"layer": "Specialty Semis & IP", "thesis": "IoT edge silicon; recovering end markets"},
+    "AOSL":  {"layer": "Specialty Semis & IP", "thesis": "Power semiconductors for server VRMs"},
+
+    # Layer 6: Materials & substrates
+    "ENTG":  {"layer": "Materials & Substrates", "thesis": "Specialty materials and contamination control for advanced fabs"},
+    "ASYS":  {"layer": "Materials & Substrates", "thesis": "Thermal processing equipment; SiC capacity"},
+}
+
+
+def get_ai_supply_chain_tickers() -> list:
+    """Return the curated AI supply chain ticker list."""
+    return list(AI_SUPPLY_CHAIN_UNIVERSE.keys())
+
+
+def get_ai_supply_chain_info(ticker: str) -> dict:
+    """Return layer and thesis for an AI supply chain ticker."""
+    return AI_SUPPLY_CHAIN_UNIVERSE.get(ticker.upper(), {})

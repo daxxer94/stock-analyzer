@@ -184,28 +184,87 @@ def _fetch_sec_filings_impl(cik: str, form_type: str = "10-K", count: int = 5) -
 
 # ─── News ─────────────────────────────────────────────────────────────────────
 
+def _parse_news_date(item: dict, content: dict) -> int:
+    """Extract a unix timestamp from the various date formats yfinance returns."""
+    import datetime as _dt
+    # New format: content.pubDate is ISO 8601 string
+    for src in (content, item):
+        pub_date = src.get("pubDate") or src.get("displayTime") or src.get("providerPublishTime")
+        if pub_date:
+            if isinstance(pub_date, (int, float)) and pub_date > 0:
+                return int(pub_date)
+            if isinstance(pub_date, str):
+                try:
+                    # ISO 8601 e.g. "2026-06-10T14:30:00Z"
+                    dt = _dt.datetime.fromisoformat(pub_date.replace("Z", "+00:00"))
+                    return int(dt.timestamp())
+                except Exception:
+                    pass
+    return 0
+
+
 def _fetch_news_impl(ticker: str) -> list:
-    """Fetch recent news articles from Yahoo Finance via yfinance."""
+    """
+    Fetch recent news from Yahoo Finance.
+    yfinance 1.4.0 changed the structure: each item now nests data under
+    item['content'] with canonicalUrl / clickThroughUrl for the link.
+    This handles both old (flat) and new (nested) formats.
+    """
+    results = []
     try:
-        news = yf.Ticker(ticker).get_news(count=15) or []
-        results = []
-        for item in news:
-            # yfinance 0.2.x returns list of dicts
-            if isinstance(item, dict):
-                title = item.get("title") or item.get("content", {}).get("title", "")
-                link  = item.get("link")  or item.get("content", {}).get("canonicalUrl", {}).get("url", "")
-                pub   = item.get("publisher") or item.get("content", {}).get("provider", {}).get("displayName", "")
-                ts    = item.get("providerPublishTime") or 0
-                if title and link:
-                    results.append({
-                        "title":     title,
-                        "link":      link,
-                        "publisher": pub,
-                        "timestamp": ts,
-                    })
-        return results[:12]
+        news = yf.Ticker(ticker).get_news(count=20) or []
     except Exception:
-        return []
+        news = []
+
+    for item in news:
+        if not isinstance(item, dict):
+            continue
+
+        # New nested format
+        content = item.get("content", {}) if isinstance(item.get("content"), dict) else {}
+
+        # Title
+        title = (item.get("title") or content.get("title") or "").strip()
+
+        # Link — try every known location
+        link = (
+            item.get("link")
+            or content.get("canonicalUrl", {}).get("url", "") if isinstance(content.get("canonicalUrl"), dict) else ""
+        )
+        if not link:
+            ctu = content.get("clickThroughUrl")
+            if isinstance(ctu, dict):
+                link = ctu.get("url", "")
+        if not link:
+            cu = content.get("canonicalUrl")
+            if isinstance(cu, dict):
+                link = cu.get("url", "")
+        if not link:
+            link = item.get("link", "")
+
+        # Publisher
+        pub = item.get("publisher", "")
+        if not pub:
+            provider = content.get("provider", {})
+            if isinstance(provider, dict):
+                pub = provider.get("displayName", "")
+
+        ts = _parse_news_date(item, content)
+
+        if title:
+            # If still no link, build a Yahoo Finance search fallback so it's never dead
+            if not link:
+                import urllib.parse as _up
+                link = f"https://finance.yahoo.com/quote/{_up.quote(ticker)}/news/"
+            results.append({
+                "title":               title,
+                "link":                link,
+                "publisher":           pub or "Yahoo Finance",
+                "timestamp":           ts,
+                "providerPublishTime": ts,   # both keys for compatibility
+            })
+
+    return results[:15]
 
 
 def build_news_search_links(ticker: str, company_name: str) -> list:
@@ -448,6 +507,84 @@ def generate_swot(info: dict, scoring: dict, signals: dict,
     if pct_from_high and pct_from_high < -0.30:
         threats.append(f"📉 Stock is {abs(pct_from_high):.0%} below its 52-week high — sustained downtrend")
 
+    # ── News & strategy-driven layer (dynamic, recent) ───────────────────────
+    news_items = (sentiment.get("_news_items") or []) if isinstance(sentiment, dict) else []
+    if news_items:
+        import datetime as _dt
+        now = _dt.datetime.now()
+        recent_titles = []
+        for it in news_items[:12]:
+            ts = it.get("timestamp") or it.get("providerPublishTime") or 0
+            try:
+                age_days = (now - _dt.datetime.fromtimestamp(ts)).days if ts else 999
+            except Exception:
+                age_days = 999
+            if age_days <= 30:
+                recent_titles.append(it.get("title", "").lower())
+
+        joined = " ".join(recent_titles)
+        # Opportunity signals from recent headlines
+        opp_kw = {
+            "upgrade":        "Recent analyst upgrade reported in the news flow",
+            "beat":           "Recent earnings beat highlighted in headlines",
+            "raises guidance":"Company recently raised guidance",
+            "new product":    "New product / launch generating coverage",
+            "partnership":    "New partnership or strategic deal announced",
+            "contract":       "New contract win covered in recent news",
+            "expansion":      "Expansion into new markets reported",
+            "buyback":        "Share buyback / capital return announced",
+            "record":         "Record results or metrics reported recently",
+        }
+        for kw, msg in opp_kw.items():
+            if kw in joined:
+                opportunities.append(f"📰 {msg}")
+                break
+        # Threat signals from recent headlines
+        thr_kw = {
+            "downgrade":      "Recent analyst downgrade in the news flow",
+            "miss":           "Recent earnings miss highlighted in headlines",
+            "cuts guidance":  "Company recently cut guidance",
+            "lawsuit":        "Litigation / legal action reported recently",
+            "investigation":  "Regulatory investigation covered in news",
+            "recall":         "Product recall reported recently",
+            "layoff":         "Layoffs / restructuring reported — execution pressure",
+            "probe":          "Regulatory probe mentioned in recent coverage",
+            "fine":           "Regulatory fine or penalty reported",
+        }
+        for kw, msg in thr_kw.items():
+            if kw in joined:
+                threats.append(f"📰 {msg}")
+                break
+
+    # ── Sector / industry context layer ──────────────────────────────────────
+    sector = info.get("sector", "")
+    sector_dynamics = {
+        "Technology":         ("AI/cloud capex cycle and digital transformation tailwinds",
+                               "Rapid technology shifts and intensifying competition / regulation"),
+        "Healthcare":         ("Aging demographics and structural healthcare demand growth",
+                               "Drug pricing pressure and binary regulatory/clinical outcomes"),
+        "Financial Services": ("Higher-rate environment supports net interest margins",
+                               "Credit cycle and capital regulation (Basel) constrain returns"),
+        "Energy":             ("Commodity price strength and energy security investment",
+                               "Energy transition and stranded-asset risk over the long run"),
+        "Consumer Cyclical":  ("Consumer spending recovery and brand pricing power",
+                               "Highly sensitive to recession and consumer-confidence swings"),
+        "Industrials":        ("Reshoring, infrastructure spend, and defense budget tailwinds",
+                               "Cyclical demand tied to PMI and capital-spending cycles"),
+        "Communication Services": ("Streaming/ad recovery and AI-driven ARPU expansion",
+                               "Antitrust scrutiny and content-cost arms race"),
+        "Basic Materials":    ("Green-transition demand for copper, lithium, and key metals",
+                               "China-demand dependence and commodity-price cyclicality"),
+        "Utilities":          ("Electrification and rate-based capex growth",
+                               "Rate sensitivity — bond-proxy status hurts when rates rise"),
+        "Real Estate":        ("Inflation-hedge characteristics and rent escalation",
+                               "Direct rate sensitivity compresses REIT valuations"),
+    }
+    if sector in sector_dynamics:
+        opp_msg, thr_msg = sector_dynamics[sector]
+        opportunities.append(f"🏭 Sector tailwind: {opp_msg}")
+        threats.append(f"🏭 Sector risk: {thr_msg}")
+
     # Ensure we have content in each category
     if not strengths:    strengths.append("No standout strengths identified from available data")
     if not weaknesses:   weaknesses.append("No major weaknesses identified from available data")
@@ -455,10 +592,10 @@ def generate_swot(info: dict, scoring: dict, signals: dict,
     if not threats:      threats.append("No significant threats identified from available data")
 
     return {
-        "strengths":     strengths[:6],
-        "weaknesses":    weaknesses[:6],
-        "opportunities": opportunities[:5],
-        "threats":       threats[:5],
+        "strengths":     strengths[:7],
+        "weaknesses":    weaknesses[:7],
+        "opportunities": opportunities[:7],
+        "threats":       threats[:7],
     }
 
 
@@ -473,9 +610,79 @@ def fetch_sec_filings(cik: str, form_type: str = "10-K", count: int = 5) -> list
                 lambda: _fetch_sec_filings_impl(cik, form_type, count))
 
 
-def fetch_news(ticker: str) -> list:
-    """Cached 30 min."""
-    return _ttl(f"news:{ticker}", 1800, lambda: _fetch_news_impl(ticker))
+def _fetch_google_news_rss(ticker: str, company_name: str = "") -> list:
+    """
+    Fallback news source: Google News RSS feed.
+    Free, reliable, returns real recent articles with working links.
+    Used when yfinance news fails (which is frequent).
+    """
+    import urllib.request
+    import xml.etree.ElementTree as ET
+    import urllib.parse as _up
+
+    # Build a query: company name + ticker for relevance
+    query = company_name or ticker
+    q_enc = _up.quote(f"{query} stock")
+    url   = f"https://news.google.com/rss/search?q={q_enc}&hl=en-US&gl=US&ceid=US:en"
+
+    results = []
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            raw = resp.read()
+        root = ET.fromstring(raw)
+        for item in root.iter("item"):
+            title_el = item.find("title")
+            link_el  = item.find("link")
+            date_el  = item.find("pubDate")
+            src_el   = item.find("source")
+
+            title = title_el.text if title_el is not None else ""
+            link  = link_el.text  if link_el  is not None else ""
+            pub   = src_el.text   if src_el   is not None else "Google News"
+
+            # Parse RFC 822 date
+            ts = 0
+            if date_el is not None and date_el.text:
+                try:
+                    from email.utils import parsedate_to_datetime
+                    ts = int(parsedate_to_datetime(date_el.text).timestamp())
+                except Exception:
+                    pass
+
+            if title and link:
+                results.append({
+                    "title":               title,
+                    "link":                link,
+                    "publisher":           pub,
+                    "timestamp":           ts,
+                    "providerPublishTime": ts,
+                })
+        return results[:15]
+    except Exception:
+        return []
+
+
+def _fetch_news_combined(ticker: str, company_name: str = "") -> list:
+    """Try yfinance first, fall back to Google News RSS if it returns nothing."""
+    items = _fetch_news_impl(ticker)
+    if items and len(items) >= 3:
+        return items
+    # yfinance failed or returned too few — use Google News RSS
+    rss = _fetch_google_news_rss(ticker, company_name)
+    # Merge, dedupe by title
+    seen = {it["title"] for it in items}
+    for it in rss:
+        if it["title"] not in seen:
+            items.append(it)
+            seen.add(it["title"])
+    return items[:15]
+
+
+def fetch_news(ticker: str, company_name: str = "") -> list:
+    """Cached 30 min. Combines yfinance + Google News RSS fallback."""
+    return _ttl(f"news:{ticker}", 1800,
+                lambda: _fetch_news_combined(ticker, company_name))
 
 
 def get_regulatory_info(country: str, company_name: str) -> dict:

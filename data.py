@@ -252,10 +252,12 @@ def _fetch_ticker_data_impl(ticker: str) -> dict:
                 pass
             time.sleep(0.15)
 
-        # News
+        # News — use the robust fetcher (yfinance + Google News RSS fallback)
         news_items = []
         try:
-            news_items = _retry(lambda: yf.Ticker(ticker).get_news(count=15) or [], label=f"{ticker}/news")
+            from sec_data import _fetch_news_combined
+            company_name = info.get("shortName") or info.get("longName") or ""
+            news_items = _fetch_news_combined(ticker, company_name)
         except Exception:
             pass
 
@@ -321,12 +323,28 @@ def fetch_sp500() -> pd.DataFrame:
     return _ttl_cache("sp500", 3600, _fetch_sp500_impl)
 
 
-@st.cache_data(ttl=3600)
 def fetch_peer_metrics(tickers_tuple: tuple) -> dict:
     """
-    Fetch valuation metrics for peer list.
+    Fetch valuation metrics for peer list (TTL dict cache, not @st.cache_data
+    which silently caches empty results on transient network errors).
     Capped at 6 peers, 0.3s stagger to keep it fast.
     """
+    if not tickers_tuple:
+        return {}
+    cache_key = "peers:" + ",".join(sorted(tickers_tuple[:6]))
+    cached = _CACHE.get(cache_key)
+    if cached:
+        val, ts = cached
+        if time.time() - ts < 3600 and val:   # only use non-empty cached results
+            return val
+
+    result = _fetch_peer_metrics_impl(tickers_tuple)
+    if result:   # only cache non-empty results
+        _CACHE[cache_key] = (result, time.time())
+    return result
+
+
+def _fetch_peer_metrics_impl(tickers_tuple: tuple) -> dict:
     result = {}
     # Cap at 6 peers to bound the time (6 × ~1s = ~6s max)
     for i, t in enumerate(tickers_tuple[:6]):

@@ -33,6 +33,7 @@ def _ttl(key, ttl_secs, fn):
 
 # ─── Supported currencies ──────────────────────────────────────────────────
 CURRENCIES = {
+    "NATIVE": "Native (each stock's own currency)",
     "USD": "🇺🇸 US Dollar",
     "EUR": "🇪🇺 Euro",
     "GBP": "🇬🇧 British Pound",
@@ -148,10 +149,14 @@ def convert(value: float, from_ccy: str, to_ccy: str, rates: dict) -> float:
 
 def fmt_currency(value, ccy: str, display_ccy: str, rates: dict,
                  dec: int = 2, abbreviate: bool = True) -> str:
-    """Format a monetary value in the display currency."""
+    """Format a monetary value in the display currency.
+    If display_ccy is 'NATIVE' (or empty), keep the value in its own currency."""
     import numpy as np
     if value is None or (isinstance(value, float) and (np.isnan(value) or np.isinf(value))):
         return "—"
+    # NATIVE mode: show each stock in its own currency, no conversion
+    if not display_ccy or display_ccy.upper() == "NATIVE":
+        display_ccy = ccy or "USD"
     converted = convert(float(value), ccy, display_ccy, rates)
     if converted is None:
         return "—"
@@ -185,6 +190,7 @@ def sidebar_currency_selector() -> tuple[str, dict, float]:
     ccy_labels  = [f"{k} — {v}" for k, v in CURRENCIES.items()]
     sel_idx = st.selectbox("Currency", options=range(len(ccy_options)),
                             format_func=lambda i: ccy_labels[i],
+                            index=0,  # NATIVE by default
                             key="display_ccy", label_visibility="collapsed")
     selected = ccy_options[sel_idx]
 

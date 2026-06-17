@@ -264,7 +264,8 @@ def estimate_growth_rates(ufcf_list: list, info: dict) -> dict:
     blended_near = max(-0.10, min(0.40, blended_near))
 
     # Stage 2: fade rate (average of stage 1 and terminal)
-    terminal_g   = 0.025
+    # Use sector-specific terminal growth instead of a flat 2.5%
+    terminal_g   = get_sector_assumptions(info).get("terminal_growth", 0.025) if isinstance(info, dict) else 0.025
     blended_fade = max(terminal_g, blended_near * 0.5)
 
     # Stage 2 also blended with LTG if available
@@ -300,6 +301,40 @@ def _ufcf_cagr(ufcf_list: list) -> float:
 
 
 # ─── WACC ─────────────────────────────────────────────────────────────────────
+
+# ─── Sector-specific DCF assumptions ─────────────────────────────────────────
+# Terminal growth, target operating margin, and capex intensity by sector.
+# Sources: Damodaran sector data, industry long-run GDP+inflation norms.
+
+SECTOR_DCF_ASSUMPTIONS = {
+    "Technology":             {"terminal_growth": 0.030, "target_margin": 0.25, "capex_ratio": 0.06},
+    "Communication Services": {"terminal_growth": 0.028, "target_margin": 0.20, "capex_ratio": 0.10},
+    "Healthcare":             {"terminal_growth": 0.027, "target_margin": 0.18, "capex_ratio": 0.05},
+    "Financial Services":     {"terminal_growth": 0.025, "target_margin": 0.28, "capex_ratio": 0.02},
+    "Consumer Cyclical":      {"terminal_growth": 0.024, "target_margin": 0.09, "capex_ratio": 0.05},
+    "Consumer Defensive":     {"terminal_growth": 0.022, "target_margin": 0.10, "capex_ratio": 0.04},
+    "Industrials":            {"terminal_growth": 0.024, "target_margin": 0.12, "capex_ratio": 0.05},
+    "Energy":                 {"terminal_growth": 0.018, "target_margin": 0.12, "capex_ratio": 0.12},
+    "Basic Materials":        {"terminal_growth": 0.020, "target_margin": 0.13, "capex_ratio": 0.09},
+    "Utilities":              {"terminal_growth": 0.022, "target_margin": 0.15, "capex_ratio": 0.15},
+    "Real Estate":            {"terminal_growth": 0.023, "target_margin": 0.30, "capex_ratio": 0.08},
+}
+
+DEFAULT_DCF_ASSUMPTIONS = {"terminal_growth": 0.025, "target_margin": 0.12, "capex_ratio": 0.06}
+
+
+def get_sector_assumptions(info: dict) -> dict:
+    """Return DCF assumptions tuned to the company's sector."""
+    sector = info.get("sector", "")
+    base = dict(SECTOR_DCF_ASSUMPTIONS.get(sector, DEFAULT_DCF_ASSUMPTIONS))
+    # Refine terminal growth for mega-cap vs small-cap within a sector
+    mktcap = float(info.get("marketCap") or 0)
+    if mktcap > 5e11:           # mega-cap: slightly lower long-run growth (law of large numbers)
+        base["terminal_growth"] = max(0.020, base["terminal_growth"] - 0.003)
+    elif 0 < mktcap < 2e9:      # small-cap: can sustain higher terminal growth
+        base["terminal_growth"] = min(0.035, base["terminal_growth"] + 0.005)
+    return base
+
 
 def calculate_wacc(info: dict, income: pd.DataFrame,
                    balance: pd.DataFrame, rfr: float) -> dict:

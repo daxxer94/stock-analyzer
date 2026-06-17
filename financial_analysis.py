@@ -955,3 +955,193 @@ def get_government_factors(info: dict) -> dict:
         "factors":         profile.get("factors",[]) + extra,
         "country":         country,
     }
+
+# ─── AI Supply Chain Context ──────────────────────────────────────────────────
+# For semiconductor / hardware companies: where they sit in the AI buildout
+# and what demand drivers apply. Shown in the Deep Analysis tab.
+
+AI_SUPPLY_CHAIN_LAYERS = {
+    "Packaging, Test & Inspection": {
+        "demand_driver": "HBM4 and chiplet packaging are the current capacity bottleneck. "
+                         "Every advanced AI accelerator requires CoWoS-style packaging and "
+                         "extensive known-good-die testing, driving order books at metrology, "
+                         "burn-in, and probe-card suppliers.",
+        "key_metrics":   "Order intake/backlog growth, OSAT customer wins, HBM-maker qualification",
+        "cycle_risk":    "Customer concentration in a handful of HPC/HBM players; orders are lumpy",
+    },
+    "Optical & Networking": {
+        "demand_driver": "AI clusters require massive east-west bandwidth. The transition to "
+                         "800G/1.6T optics and eventually co-packaged optics (CPO) expands "
+                         "content per rack significantly versus traditional datacenters.",
+        "key_metrics":   "Transceiver ASP trends, hyperscaler design wins, CPO roadmap timing",
+        "cycle_risk":    "Pricing pressure from Chinese competitors; technology transition risk",
+    },
+    "Power & Cooling": {
+        "demand_driver": "AI racks draw 5-10x the power of traditional racks. Liquid cooling "
+                         "shifts from optional to mandatory above ~80kW/rack. Grid interconnect "
+                         "queues create multi-year visibility for power equipment suppliers.",
+        "key_metrics":   "Backlog/book-to-bill, datacenter segment revenue mix, utility capex plans",
+        "cycle_risk":    "Long project timelines; potential AI capex digestion phase",
+    },
+    "Memory & Storage": {
+        "demand_driver": "Training and inference both require high-bandwidth memory and fast "
+                         "storage tiers. HBM supply remains tight; enterprise SSD demand grows "
+                         "with inference deployment and data pipeline buildout.",
+        "key_metrics":   "HBM/NAND pricing, controller design wins, enterprise SSD attach rates",
+        "cycle_risk":    "Memory is deeply cyclical; oversupply phases punish the whole chain",
+    },
+    "Server & Systems": {
+        "demand_driver": "AI server assembly with direct-liquid-cooling integration. "
+                         "Speed-to-deploy is the differentiator hyperscalers pay for.",
+        "key_metrics":   "Rack shipment growth, GPU allocation share, gross margin trajectory",
+        "cycle_risk":    "Thin margins; component pass-through model; intense competition",
+    },
+    "Specialty Semis & IP": {
+        "demand_driver": "Every AI server contains dozens of supporting chips: memory interfaces, "
+                         "timing, power management, retimers. Content-per-server grows each "
+                         "generation regardless of which GPU vendor wins.",
+        "key_metrics":   "Content per server trends, design-win pipeline, royalty growth",
+        "cycle_risk":    "Design cycles are long; competitive displacement between generations",
+    },
+    "Materials & Substrates": {
+        "demand_driver": "Advanced nodes and packaging require ultra-pure materials, specialty "
+                         "gases, and contamination control. Consumable revenue grows with wafer "
+                         "starts rather than equipment cycles, providing more stability.",
+        "key_metrics":   "Fab utilisation rates, advanced-node wafer starts, consumables mix",
+        "cycle_risk":    "Tied to overall fab spending; less explosive upside than equipment",
+    },
+    "Specialty Foundry": {
+        "demand_driver": "Domestic/trusted production requirements (CHIPS Act, defense) create "
+                         "demand for onshore specialty foundries independent of leading-edge competition.",
+        "key_metrics":   "Government program wins, capacity utilisation, ASP trends",
+        "cycle_risk":    "Sub-scale economics versus giants; capex burden",
+    },
+}
+
+
+def get_ai_supply_chain_context(ticker: str, info: dict) -> dict:
+    """
+    Return AI supply chain positioning for a ticker.
+    Checks the curated universe first; falls back to industry inference.
+    """
+    try:
+        from screener import AI_SUPPLY_CHAIN_UNIVERSE
+        entry = AI_SUPPLY_CHAIN_UNIVERSE.get(ticker.upper())
+        if entry:
+            layer = entry["layer"]
+            return {
+                "in_universe":  True,
+                "layer":        layer,
+                "thesis":       entry["thesis"],
+                "layer_detail": AI_SUPPLY_CHAIN_LAYERS.get(layer, {}),
+            }
+    except ImportError:
+        pass
+
+    # Fallback: infer from industry for semis/hardware companies not in the list
+    industry = (info.get("industry") or "").lower()
+    sector   = (info.get("sector") or "").lower()
+    if "semiconductor" in industry:
+        if "equipment" in industry or "material" in industry:
+            layer = "Packaging, Test & Inspection"
+        else:
+            layer = "Specialty Semis & IP"
+        return {
+            "in_universe":  False,
+            "layer":        layer,
+            "thesis":       "",
+            "layer_detail": AI_SUPPLY_CHAIN_LAYERS.get(layer, {}),
+        }
+    if "communication equipment" in industry or "networking" in industry:
+        return {
+            "in_universe":  False,
+            "layer":        "Optical & Networking",
+            "thesis":       "",
+            "layer_detail": AI_SUPPLY_CHAIN_LAYERS.get("Optical & Networking", {}),
+        }
+    if "electrical" in industry and "technology" in sector:
+        return {
+            "in_universe":  False,
+            "layer":        "Power & Cooling",
+            "thesis":       "",
+            "layer_detail": AI_SUPPLY_CHAIN_LAYERS.get("Power & Cooling", {}),
+        }
+    return {}
+
+
+# ─── AI Supply Chain / Semiconductor Industry Context ────────────────────────
+# Detailed structural context for semiconductor and AI-hardware companies.
+# Surfaced in the Deep Analysis tab when a company sits in the AI supply chain.
+
+AI_SUPPLY_CHAIN_CONTEXT = {
+    "demand_drivers": [
+        ("AI Training & Inference Capex",
+         "Hyperscaler capital expenditure (Microsoft, Google, Amazon, Meta) is the primary "
+         "demand engine. Combined hyperscaler capex has grown sharply year-over-year, with the "
+         "majority directed at AI accelerators, networking, and the supporting power and cooling "
+         "infrastructure. Watch quarterly capex guidance — it is the leading indicator for the "
+         "entire supply chain."),
+        ("HBM (High-Bandwidth Memory) Bottleneck",
+         "HBM is the critical constraint on AI accelerator output. Each generation (HBM3E, HBM4) "
+         "requires more advanced packaging, test, and inspection. Memory makers with HBM capacity "
+         "and the equipment vendors that serve them capture outsized value during the ramp."),
+        ("Advanced Packaging (CoWoS / chiplets)",
+         "As transistor scaling slows, performance gains increasingly come from advanced packaging "
+         "that stacks and connects multiple dies. CoWoS capacity has been a hard limit on AI chip "
+         "supply. Metrology, inspection, and bonding-equipment vendors benefit directly."),
+        ("Optical Interconnect & Networking",
+         "AI clusters require massive east-west bandwidth between accelerators. Optical transceivers "
+         "(800G → 1.6T), co-packaged optics, and high-speed SerDes are scaling with cluster size. "
+         "Networking content per AI server is rising faster than compute content."),
+        ("Datacenter Power & Cooling",
+         "AI racks draw far more power than traditional servers, forcing a shift to liquid cooling "
+         "and higher-density power delivery. Thermal management and power-distribution vendors are "
+         "seeing structural demand growth tied to rack density, not just unit volume."),
+    ],
+    "cyclical_risks": [
+        ("Digestion / Inventory Cycles",
+         "Semiconductors are historically cyclical. Periods of over-ordering (double-ordering during "
+         "shortages) are followed by inventory corrections where orders fall sharply. AI demand has "
+         "muted but not eliminated this cycle — watch book-to-bill ratios and inventory days."),
+        ("Customer Concentration",
+         "Many supply-chain names depend on a handful of large customers (one or two hyperscalers, "
+         "or a single dominant accelerator vendor). A change in a single customer's roadmap or "
+         "in-sourcing decision can swing revenue materially."),
+        ("Capacity Additions",
+         "High margins attract capacity. As HBM and packaging capacity expand, today's bottleneck "
+         "can become tomorrow's oversupply. The most durable franchises hold proprietary technology "
+         "or tool positions that are hard to replicate."),
+    ],
+    "geopolitical": [
+        ("US Export Controls",
+         "US BIS restrictions on advanced chips and equipment to China (Entity List, ECRA) reshape "
+         "the supply chain. Companies with China revenue face ongoing regulatory risk; some benefit "
+         "from forced regional diversification and domestic capacity build-outs."),
+        ("Subsidies & Reshoring",
+         "CHIPS Act (US), European Chips Act, and equivalent programs in Japan, Korea, and India "
+         "subsidise domestic fab and packaging capacity. Equipment and materials vendors benefit "
+         "from the multi-year construction and tooling cycle."),
+        ("Taiwan Concentration Risk",
+         "A large share of advanced logic and packaging capacity is concentrated in Taiwan. "
+         "Geopolitical tension creates tail risk for the entire chain and is driving diversification "
+         "into the US, Japan, and Europe."),
+    ],
+}
+
+
+def is_ai_supply_chain(info: dict) -> bool:
+    """Heuristic: is this company part of the AI hardware supply chain?"""
+    sector   = (info.get("sector") or "").lower()
+    industry = (info.get("industry") or "").lower()
+    if "technology" not in sector and "semiconductor" not in industry:
+        return False
+    keywords = ["semiconductor", "equipment", "components", "hardware",
+                "electronic", "computer", "networking", "instruments"]
+    return any(k in industry for k in keywords)
+
+
+def get_ai_supply_chain_context(info: dict) -> dict:
+    """Return the AI supply chain context if the company qualifies."""
+    if not is_ai_supply_chain(info):
+        return {}
+    return AI_SUPPLY_CHAIN_CONTEXT
